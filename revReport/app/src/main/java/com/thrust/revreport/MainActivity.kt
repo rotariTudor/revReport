@@ -93,23 +93,23 @@ data class VehicleInfoState(
 )
 
 fun fuelTypeName(code: Int): String = when (code) {
-    0 -> "Indisponibil"
-    1 -> "Benzină"
-    2 -> "Metanol"
-    3 -> "Etanol"
-    4 -> "Motorină"
+    0 -> "Unknown"
+    1 -> "Gas"
+    2 -> "Methanol"
+    3 -> "Ethanol"
+    4 -> "Diesel"
     5 -> "GPL"
     6 -> "GNC"
     7 -> "Propan"
     8 -> "Electric"
     in 9..16 -> "Bi-fuel (cod $code)"
-    17 -> "Hibrid benzină"
-    18 -> "Hibrid etanol"
-    19 -> "Hibrid motorină"
-    20 -> "Hibrid electric"
-    21 -> "Hibrid (electric + termic)"
-    22 -> "Hibrid cu recuperare"
-    23 -> "Bi-fuel motorină"
+    17 -> "Hybrid gas"
+    18 -> "Hybrid ethanol"
+    19 -> "Hybrid diesel"
+    20 -> "Electric hybrid"
+    21 -> "Electric hybrid + thermal"
+    22 -> "Regenerative hybrid"
+    23 -> "Bi-fuel diesel"
     else -> "Necunoscut (cod $code)"
 }
 
@@ -129,7 +129,7 @@ class MainActivity : ComponentActivity() {
             val context = LocalContext.current
             val coroutineScope = rememberCoroutineScope()
 
-            var status by remember { mutableStateOf("Neconectat") }
+            var status by remember { mutableStateOf("Disconnected") }
             var busy by remember { mutableStateOf(false) }
             var connectedDevice by remember { mutableStateOf<DeviceItem?>(null) }
             var pollJob by remember { mutableStateOf<Job?>(null) }
@@ -179,7 +179,7 @@ class MainActivity : ComponentActivity() {
 
                         failures = if (gotAny) 0 else failures + 1
                         if (failures >= 3) {
-                            status = "Conexiunea s-a pierdut"
+                            status = "Connection lost"
                             connectedDevice = null
                             vehicle = null
                             profile = VehicleProfile()
@@ -200,18 +200,18 @@ class MainActivity : ComponentActivity() {
                 profile = VehicleProfile()
                 profileKnown = false
                 values.clear()
-                status = "Deconectat"
+                status = "Disconnected"
             }
 
             fun connectToDevice(item: DeviceItem) {
                 if (busy) return
                 val adapter = btManager.bluetoothAdapter
                 if (adapter == null) {
-                    status = "Telefonul nu are Bluetooth"
+                    status = "The device does not have bluetooth"
                     return
                 }
                 if (!adapter.isEnabled) {
-                    status = "Bluetooth-ul este oprit"
+                    status = "Bluetooth is off"
                     toast(status, true)
                     return
                 }
@@ -228,28 +228,28 @@ class MainActivity : ComponentActivity() {
                 coroutineScope.launch {
                     try {
                         val device = adapter.getRemoteDevice(item.address)
-                        status = "Mă conectez la ${item.name}..."
+                        status = "Connecting to ${item.name}..."
 
                         val isConnected = withContext(Dispatchers.IO) { btManager.connect(device) }
                         if (!isConnected) {
-                            status = "Eșec la conectarea cu ${item.name}"
+                            status = "Failed connecting to ${item.name}"
                             toast(status, true)
                             return@launch
                         }
 
-                        status = "Inițializez adaptorul..."
+                        status = "Initialising the adaptor..."
                         val atzResponse = btManager.initializeAdapter()
 
                         if (atzResponse.isNotBlank()) {
                             connectedDevice = item
-                            status = "Conectat la ${item.name} · $atzResponse"
+                            status = "Connected to ${item.name} · $atzResponse"
 
                             // Detectăm automat dacă e hibrid / diesel
-                            status = "Detectez tipul mașinii..."
+                            status = "Detecting the type of car..."
                             val detection = btManager.detectVehicle()
                             profile = detection.profile
                             profileKnown = true
-                            status = "Conectat la ${item.name} · $atzResponse"
+                            status = "Connected to ${item.name} · $atzResponse"
 
                             // Identificăm mașina: VIN din mașină, apoi marcă/model/generație
                             val vin = btManager.readVin()
@@ -269,15 +269,15 @@ class MainActivity : ComponentActivity() {
                                 startPolling()
                             }
                         } else {
-                            status = "Conectat la ${item.name}, dar fără răspuns la comenzi"
+                            status = "Connected to ${item.name}, with no response"
                             toast(status, true)
                         }
                     } catch (e: SecurityException) {
-                        status = "Sistemul a blocat Bluetooth-ul (permisiuni)"
+                        status = "The system blocked the bluetooth (permissions)"
                         toast(status)
                     } catch (e: Exception) {
-                        Log.e("RevReport", "Eroare internă", e)
-                        status = "Eroare internă: ${e.message}"
+                        Log.e("RevReport", "Internal error", e)
+                        status = "Internal error: ${e.message}"
                         toast(status, true)
                     } finally {
                         busy = false
@@ -288,12 +288,12 @@ class MainActivity : ComponentActivity() {
             fun openDevices() {
                 val adapter = btManager.bluetoothAdapter
                 if (adapter == null) {
-                    status = "Telefonul nu are Bluetooth"
+                    status = "The device does not support bluetooth"
                     return
                 }
                 devices.clear()
                 adapter.bondedDevices.orEmpty()
-                    .map { DeviceItem(it.name ?: "Fără nume", it.address) }
+                    .map { DeviceItem(it.name ?: "Without name", it.address) }
                     .sortedBy { it.name.lowercase() }
                     .forEach { devices.add(it) }
                 showDevices = true
@@ -305,7 +305,7 @@ class MainActivity : ComponentActivity() {
                 if (permissions.values.all { it }) {
                     openDevices()
                 } else {
-                    status = "Aplicația are nevoie de permisiuni Bluetooth"
+                    status = "App needs Bluetooth permissions"
                     toast(status, true)
                 }
             }
@@ -335,7 +335,7 @@ class MainActivity : ComponentActivity() {
             /** Citește VIN, combustibil și PID-urile suportate; apoi decodează VIN-ul online. */
             fun readVehicleInfo() {
                 if (connectedDevice == null) {
-                    toast("Conectează-te mai întâi la un dispozitiv", true)
+                    toast("Firstly connect to a device", true)
                     return
                 }
                 if (infoLoading) return
@@ -346,10 +346,10 @@ class MainActivity : ComponentActivity() {
                     pollJob?.cancelAndJoin()   // nu trimitem două comenzi în același timp
                     pollJob = null
                     try {
-                        info = VehicleInfoState(message = "Citesc VIN-ul...")
+                        info = VehicleInfoState(message = "Reading the VIN...")
                         val vin = btManager.readVin()
 
-                        info = info.copy(vin = vin, message = "Detectez tipul mașinii...")
+                        info = info.copy(vin = vin, message = "Detecting the type of car...")
                         val detection = btManager.detectVehicle()
                         profile = detection.profile
                         profileKnown = true
@@ -358,7 +358,7 @@ class MainActivity : ComponentActivity() {
                             fuelType = detection.fuelCode?.let { fuelTypeName(it) },
                             hybridDetected = detection.profile.hybrid,
                             supportedPids = detection.supportedPids,
-                            message = if (vin != null) "Decodez VIN-ul online..." else "VIN indisponibil la această mașină"
+                            message = if (vin != null) "Decoding the VIN online..." else "VIN is unavailable for this car"
                         )
 
                         if (vin != null) {
@@ -368,12 +368,12 @@ class MainActivity : ComponentActivity() {
                             vehicle = VehicleCatalog.identify(vin, usable)
                             info = info.copy(
                                 decoded = usable,
-                                message = if (decoded == null) "Decodarea online a eșuat (internet?)" else null
+                                message = if (decoded == null) "Online decoding failed (internet?)" else null
                             )
                         }
                     } catch (e: Exception) {
-                        Log.e("RevReport", "Eroare la citirea informațiilor", e)
-                        info = info.copy(message = "Eroare: ${e.message}")
+                        Log.e("RevReport", "Error at reading information", e)
+                        info = info.copy(message = "Error: ${e.message}")
                     } finally {
                         infoLoading = false
                         if (wasPolling && connectedDevice != null) startPolling()
@@ -489,7 +489,7 @@ private fun ParametersScreen(
     onMenuClick: () -> Unit
 ) {
     Column(modifier = Modifier.fillMaxSize().background(Bg)) {
-        TopBar("Parametri", onMenuClick)
+        TopBar("Parameters", onMenuClick)
 
         vehicle?.let {
             Text(
@@ -519,7 +519,7 @@ private fun ParametersScreen(
                     colors = ButtonDefaults.buttonColors(containerColor = Red),
                     modifier = Modifier.padding(start = 12.dp)
                 ) {
-                    Text("Deconectează", color = Color.White, fontSize = 13.sp)
+                    Text("Disconnect", color = Color.White, fontSize = 13.sp)
                 }
             }
         }
@@ -564,7 +564,7 @@ private fun ParameterRow(p: ObdParameter, value: String?) {
             Text(p.name, color = TextDim, fontSize = 13.sp)
 
             if (p.pid.isBlank()) {
-                Text("PID nesetat (vezi ADBLUE_PID)", color = TextDim, fontSize = 14.sp)
+                Text("Unset PID (see AdBlue PID)", color = TextDim, fontSize = 14.sp)
             } else {
                 Row(verticalAlignment = Alignment.Bottom) {
                     Text(
@@ -631,7 +631,7 @@ private fun InfoScreen(
     onMenuClick: () -> Unit
 ) {
     Column(modifier = Modifier.fillMaxSize().background(Bg)) {
-        TopBar("Info vehicul", onMenuClick)
+        TopBar("Vehicle info", onMenuClick)
 
         Column(
             modifier = Modifier
@@ -642,25 +642,25 @@ private fun InfoScreen(
             verticalArrangement = Arrangement.spacedBy(16.dp)
         ) {
             // 1. Tipul vehiculului, detectat automat
-            SectionCard("Tip vehicul (detectat automat)") {
+            SectionCard("Type of vehicle (automatically detected)") {
                 InfoLine(
-                    "Motorizare",
-                    if (profileKnown) (if (profile.diesel) "Motorină" else "Benzină / altul") else null
+                    "Engine fuel type",
+                    if (profileKnown) (if (profile.diesel) "Diesel" else "Gas / other") else null
                 )
                 InfoLine(
-                    "Hibrid",
-                    if (profileKnown) (if (profile.hybrid) "da" else "nu") else null
+                    "Hybrid",
+                    if (profileKnown) (if (profile.hybrid) "yes" else "no") else null
                 )
                 Spacer(Modifier.height(4.dp))
                 val extra = buildList {
-                    if (profile.hybrid) add("nivelul bateriei hibride")
-                    if (profile.diesel) add("nivelul de AdBlue")
+                    if (profile.hybrid) add("Hybrid Battery level")
+                    if (profile.diesel) add("AdBlue level")
                 }
                 Text(
                     text = when {
-                        !profileKnown -> "Se detectează la conectare."
-                        extra.isEmpty() -> "Pe ecranul Parametri se afișează valorile de bază."
-                        else -> "Pe ecranul Parametri se adaugă: ${extra.joinToString(" și ")}."
+                        !profileKnown -> "Detected on connection."
+                        extra.isEmpty() -> "In parameters are shown values."
+                        else -> "In parameters is added: ${extra.joinToString(" și ")}."
                     },
                     color = TextDim,
                     fontSize = 12.sp
@@ -668,18 +668,18 @@ private fun InfoScreen(
             }
 
             // 2. Citit din mașină
-            SectionCard("Citit din mașină") {
+            SectionCard("Read from the car") {
                 Button(
                     onClick = onRead,
                     enabled = connected && !loading,
                     colors = ButtonDefaults.buttonColors(containerColor = Red),
                     modifier = Modifier.fillMaxWidth()
                 ) {
-                    Text(if (loading) "Se citește..." else "Citește informațiile", color = Color.White)
+                    Text(if (loading) "It is read..." else "Read the informations", color = Color.White)
                 }
                 if (!connected) {
                     Text(
-                        "Conectează-te mai întâi la un dispozitiv (meniu → Dispozitiv Bluetooth).",
+                        "Firstly connect to a device.",
                         color = TextDim,
                         fontSize = 12.sp,
                         modifier = Modifier.padding(top = 8.dp)
@@ -691,27 +691,27 @@ private fun InfoScreen(
 
                 Spacer(Modifier.height(8.dp))
                 InfoLine("VIN", info.vin)
-                InfoLine("Marcă", info.decoded?.make)
+                InfoLine("Make", info.decoded?.make)
                 InfoLine("Model", info.decoded?.model)
-                InfoLine("An", info.decoded?.year ?: vehicle?.year?.toString())
+                InfoLine("Year", info.decoded?.year ?: vehicle?.year?.toString())
                 InfoLine(
-                    "Generație",
+                    "Gen",
                     vehicle?.generation?.let { if (vehicle?.approx == true) "$it (estimat)" else it }
                 )
-                InfoLine("Cilindri", info.decoded?.cylinders ?: if (info.vin != null && info.message == null) "necunoscut" else null)
-                InfoLine("Combustibil (din mașină)", info.fuelType)
+                InfoLine("Cylinders", info.decoded?.cylinders ?: if (info.vin != null && info.message == null) "unknown" else null)
+                InfoLine("Fuel type", info.fuelType)
                 InfoLine(
-                    "Hibrid (detectat)",
-                    info.hybridDetected?.let { if (it) "da" else "nu" }
+                    "Hybrid (detected)",
+                    info.hybridDetected?.let { if (it) "yes" else "no" }
                 )
 
             }
 
             // 3. PID-uri suportate
             info.supportedPids?.let { pids ->
-                SectionCard("PID-uri suportate (${pids.size})") {
+                SectionCard("Supported PIDs (${pids.size})") {
                     Text(
-                        text = if (pids.isEmpty()) "Niciunul detectat" else pids.joinToString(" ") { "%02X".format(it) },
+                        text = if (pids.isEmpty()) "No device detected." else pids.joinToString(" ") { "%02X".format(it) },
                         color = TextMain,
                         fontSize = 13.sp
                     )
@@ -766,19 +766,19 @@ private fun MainMenuDialog(
     AlertDialog(
         onDismissRequest = onDismiss,
         containerColor = Card,
-        title = { Text("Meniu", color = Color.White) },
+        title = { Text("Menu", color = Color.White) },
         text = {
             Column {
-                MenuItem("Parametri", onParams)
+                MenuItem("Bluetooth Device", onDevices)
                 HorizontalDivider(color = Color(0xFF2A2A2A))
-                MenuItem("Info vehicul", onInfo)
+                MenuItem("Vehicle Information", onInfo)
                 HorizontalDivider(color = Color(0xFF2A2A2A))
-                MenuItem("Dispozitiv Bluetooth", onDevices)
+                MenuItem("Parameters", onParams)
             }
         },
         confirmButton = {},
         dismissButton = {
-            TextButton(onClick = onDismiss) { Text("Închide", color = Color.White) }
+            TextButton(onClick = onDismiss) { Text("Close", color = Color.White) }
         }
     )
 }
@@ -808,11 +808,11 @@ private fun DeviceDialog(
     AlertDialog(
         onDismissRequest = onDismiss,
         containerColor = Card,
-        title = { Text("Alege dispozitivul", color = Color.White) },
+        title = { Text("Choose a device", color = Color.White) },
         text = {
             if (devices.isEmpty()) {
                 Text(
-                    "Niciun dispozitiv asociat. Asociază adaptorul din Setări → Bluetooth, apoi revino aici.",
+                    "No device connected. Connect the device from settings -> bluetooth, then come back.",
                     color = TextDim
                 )
             } else {
@@ -840,11 +840,11 @@ private fun DeviceDialog(
         },
         confirmButton = {
             if (connected != null) {
-                TextButton(onClick = onDisconnect) { Text("Deconectează", color = Red) }
+                TextButton(onClick = onDisconnect) { Text("Disconnect", color = Red) }
             }
         },
         dismissButton = {
-            TextButton(onClick = onDismiss) { Text("Închide", color = Color.White) }
+            TextButton(onClick = onDismiss) { Text("Close", color = Color.White) }
         }
     )
 }

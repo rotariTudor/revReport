@@ -34,35 +34,36 @@ private fun List<Int>.ab(): Int? {
 }
 
 val obdParameters = listOf(
-    ObdParameter("rpm", "RPM", "Turația motorului", "rpm", "010C") { it.ab()?.let { v -> v / 4.0 } },
-    ObdParameter("vss", "VSS", "Viteza vehiculului", "km/h", "010D") { it.a()?.toDouble() },
-    ObdParameter("ect", "ECT", "Temperatura lichidului de răcire", "°C", "0105") { it.a()?.let { v -> v - 40.0 } },
-    ObdParameter("aat", "AAT", "Temperatura aerului ambiant", "°C", "0146") { it.a()?.let { v -> v - 40.0 } },
-    ObdParameter("iat", "IAT", "Temperatura aerului de admisie", "°C", "010F") { it.a()?.let { v -> v - 40.0 } },
-    ObdParameter("tp", "TP", "Poziția clapetei de accelerație", "%", "0111") { it.a()?.let { v -> v * 100.0 / 255.0 } },
-    ObdParameter("maf", "MAF", "Debit de aer (MAF)", "g/s", "0110") { it.ab()?.let { v -> v / 100.0 } },
-    ObdParameter("map", "MAP", "Presiunea absolută în galeria de admisie", "kPa", "010B") { it.a()?.toDouble() },
-    ObdParameter("load", "LOAD", "Sarcina calculată a motorului", "%", "0104") { it.a()?.let { v -> v * 100.0 / 255.0 } },
-    ObdParameter("vpwr", "VPWR", "Tensiunea ECU", "V", "0142", decimals = 2) { it.ab()?.let { v -> v / 1000.0 } },
+    ObdParameter("rpm", "RPM", "Engine RPM", "rpm", "010C") { it.ab()?.let { v -> v / 4.0 } },
+    ObdParameter("vss", "VSS", "Vehicle speed", "km/h", "010D") { it.a()?.toDouble() },
+    ObdParameter("ect", "ECT", "Engine coolant temperature", "°C", "0105") { it.a()?.let { v -> v - 40.0 } },
+    ObdParameter("aat", "AAT", "Ambient air temperature", "°C", "0146") { it.a()?.let { v -> v - 40.0 } },
+    ObdParameter("iat", "IAT", "Intake air temperature", "°C", "010F") { it.a()?.let { v -> v - 40.0 } },
+    ObdParameter("tp", "TP", "Throttle position", "%", "0111") { it.a()?.let { v -> v * 100.0 / 255.0 } },
+    ObdParameter("maf", "MAF", "Mass air flow (MAF)", "g/s", "0110") { it.ab()?.let { v -> v / 100.0 } },
+    ObdParameter("map", "MAP", "Intake manifold absolute pressure", "kPa", "010B") { it.a()?.toDouble() },
+    ObdParameter("load", "LOAD", "Calculated engine load", "%", "0104") { it.a()?.let { v -> v * 100.0 / 255.0 } },
+    ObdParameter("vpwr", "VPWR", "Control module voltage", "V", "0142", decimals = 2) { it.ab()?.let { v -> v / 1000.0 } },
 
-    // Motoarele diesel nu au aprindere cu scânteie
+    // Diesel engines do not have spark ignition
     ObdParameter(
-        "spark", "SPARK", "Avans la aprindere, cilindrul 1", "°", "010E",
+        "spark", "SPARK", "Ignition timing advance, cylinder 1", "°", "010E",
         decimals = 1, visibleFor = { !it.diesel }
     ) { it.a()?.let { v -> v / 2.0 - 64.0 } },
 
-    // Doar la hibrid: PID standard 5B, un octet, 0–100 %
+    // Hybrid only: Standard PID 5B, one byte, 0–100%
     ObdParameter(
-        "hvbat", "BATT", "Nivel baterie hibridă", "%", "015B",
+        "hvbat", "BATT", "Hybrid battery level", "%", "015B",
         visibleFor = { it.hybrid }
     ) { it.a()?.let { v -> v * 100.0 / 255.0 } },
 
-    // Doar la diesel: PID-ul și formula depind de producător (vezi ADBLUE_PID)
+    // Diesel only: The PID and formula depend on the manufacturer (see ADBLUE_PID)
     ObdParameter(
-        "adblue", "DEF", "Nivel AdBlue", "%", ADBLUE_PID,
+        "adblue", "DEF", "AdBlue level", "%", ADBLUE_PID,
         visibleFor = { it.diesel }
-    ) { it.a()?.let { v -> v * 100.0 / 255.0 } }, // ajustează formula după PID-ul mașinii
+    ) { it.a()?.let { v -> v * 100.0 / 255.0 } }, // adjust the formula according to the car's PID
 )
+
 
 fun parametersFor(profile: VehicleProfile): List<ObdParameter> =
     obdParameters.filter { it.visibleFor(profile) }
