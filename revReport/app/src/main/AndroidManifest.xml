@@ -7,6 +7,7 @@
     <uses-permission android:name="android.permission.BLUETOOTH_ADMIN" android:maxSdkVersion="30" />
     <uses-permission android:name="android.permission.ACCESS_COARSE_LOCATION" android:maxSdkVersion="30" />
     <uses-permission android:name="android.permission.ACCESS_FINE_LOCATION" android:maxSdkVersion="30" />
+    <uses-permission android:name="android.permission.INTERNET" />
 
     <!-- Permisiuni Bluetooth pentru Android 12+ (Samsung S25 FE folosește exclusiv acestea) -->
     <uses-permission android:name="android.permission.BLUETOOTH_CONNECT" />

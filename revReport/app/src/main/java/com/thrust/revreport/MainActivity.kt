@@ -71,7 +71,8 @@ import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 
-private val Red = Color(0xFFD32F2F)
+private val Purple = Color(0xFF673AB7)
+private val Red = Color(0xFFB00020);
 private val Bg = Color(0xFF0E0E0E)
 private val Card = Color(0xFF1C1C1C)
 private val TextMain = Color.White
@@ -80,7 +81,7 @@ private val TextDim = Color(0xFFB0B0B0)
 /** Un dispozitiv asociat, pregătit pentru afișare în meniu. */
 data class DeviceItem(val name: String, val address: String)
 
-enum class Screen { Params, Info }
+enum class Screen { Params, Info, Faults }
 
 /** Ce am citit din mașină pe ecranul „Info vehicul". */
 data class VehicleInfoState(
@@ -89,6 +90,16 @@ data class VehicleInfoState(
     val hybridDetected: Boolean? = null,
     val supportedPids: List<Int>? = null,
     val decoded: VinInfo? = null,
+    val message: String? = null
+)
+
+/** Codurile de eroare citite din mașină. null = încă necitit. */
+data class DtcState(
+    val stored: List<String>? = null,
+    val pending: List<String>? = null,
+    val permanent: List<String>? = null,
+    val milOn: Boolean? = null,
+    val dtcCount: Int? = null,
     val message: String? = null
 )
 
@@ -141,6 +152,9 @@ class MainActivity : ComponentActivity() {
             var info by remember { mutableStateOf(VehicleInfoState()) }
             var infoLoading by remember { mutableStateOf(false) }
             var vehicle by remember { mutableStateOf<VehicleId?>(null) }
+            var faults by remember { mutableStateOf(DtcState()) }
+            var faultsLoading by remember { mutableStateOf(false) }
+            var showClearConfirm by remember { mutableStateOf(false) }
             val devices = remember { mutableStateListOf<DeviceItem>() }
             val values = remember { mutableStateMapOf<String, String?>() }
 
@@ -381,7 +395,99 @@ class MainActivity : ComponentActivity() {
                 }
             }
 
-            BackHandler(enabled = screen == Screen.Info) { screen = Screen.Params }
+            /** Oprește citirea live cât rulează blocul, apoi o repornește (nu trimitem două comenzi odată). */
+            suspend fun <T> withPollingPaused(block: suspend () -> T): T {
+                val wasPolling = pollJob != null
+                pollJob?.cancelAndJoin()
+                pollJob = null
+                try {
+                    return block()
+                } finally {
+                    if (wasPolling && connectedDevice != null) startPolling()
+                }
+            }
+
+            suspend fun loadFaults(): DtcState {
+                val mil = btManager.readMilStatus()
+                val stored = btManager.readDtcs("03")
+                val pending = btManager.readDtcs("07")
+                val permanent = btManager.readDtcs("0A")
+                return DtcState(
+                    stored = stored,
+                    pending = pending,
+                    permanent = permanent,
+                    milOn = mil?.first,
+                    dtcCount = mil?.second,
+                    message = if (stored == null && pending == null && permanent == null)
+                        "No valid response from the vehicle." else null
+                )
+            }
+
+            fun readFaults() {
+                if (connectedDevice == null) {
+                    toast("Firstly connect to a device", true)
+                    return
+                }
+                if (faultsLoading) return
+                faultsLoading = true
+
+                coroutineScope.launch {
+                    try {
+                        withPollingPaused {
+                            faults = DtcState(message = "Reading fault codes...")
+                            faults = loadFaults()
+                        }
+                    } catch (e: kotlinx.coroutines.CancellationException) {
+                        throw e
+                    } catch (e: Exception) {
+                        Log.e("RevReport", "Error at reading fault codes", e)
+                        faults = faults.copy(message = "Error: ${e.message}")
+                    } finally {
+                        faultsLoading = false
+                    }
+                }
+            }
+
+            fun clearFaults() {
+                if (connectedDevice == null) {
+                    toast("Firstly connect to a device", true)
+                    return
+                }
+                if (faultsLoading) return
+                faultsLoading = true
+
+                coroutineScope.launch {
+                    try {
+                        withPollingPaused {
+                            faults = faults.copy(message = "Clearing fault codes...")
+                            val (ok, raw) = btManager.clearDtcs()
+                            Log.d("RevReport", "Clear DTC response: $raw")
+
+                            val fresh = loadFaults()
+                            val remaining = fresh.stored.orEmpty() + fresh.pending.orEmpty() + fresh.permanent.orEmpty()
+                            faults = fresh.copy(
+                                message = when {
+                                    ok && remaining.isEmpty() -> "Fault codes cleared."
+                                    ok -> "Clear command accepted, but some codes are still reported " +
+                                            "(permanent codes only disappear once the car confirms the fault is gone)."
+                                    else -> "The vehicle did not confirm the clear command " +
+                                            "(response: ${raw.ifBlank { "none" }}). " +
+                                            "Turn the ignition ON with the engine OFF and try again."
+                                }
+                            )
+                        }
+                    } catch (e: kotlinx.coroutines.CancellationException) {
+                        throw e
+                    } catch (e: Exception) {
+                        Log.e("RevReport", "Error at clearing fault codes", e)
+                        faults = faults.copy(message = "Error: ${e.message}")
+                    } finally {
+                        faultsLoading = false
+                    }
+                }
+            }
+
+            BackHandler(enabled = screen != Screen.Params) { screen = Screen.Params }
 
             when (screen) {
                 Screen.Params -> ParametersScreen(
@@ -404,14 +510,35 @@ class MainActivity : ComponentActivity() {
                     onRead = { readVehicleInfo() },
                     onMenuClick = { showMainMenu = true }
                 )
+
+                Screen.Faults -> FaultsScreen(
+                    faults = faults,
+                    connected = connectedDevice != null,
+                    loading = faultsLoading,
+                    onRead = { readFaults() },
+                    onClear = { showClearConfirm = true },
+                    onMenuClick = { showMainMenu = true }
+                )
             }
 
             if (showMainMenu) {
                 MainMenuDialog(
                     onParams = { showMainMenu = false; screen = Screen.Params },
                     onInfo = { showMainMenu = false; screen = Screen.Info },
+                    onFaults = {
+                        showMainMenu = false
+                        screen = Screen.Faults
+                        if (connectedDevice != null) readFaults()
+                    },
                     onDevices = { showMainMenu = false; onDevicesClick() },
                     onDismiss = { showMainMenu = false }
+                )
+            }
+
+            if (showClearConfirm) {
+                ClearFaultsDialog(
+                    onConfirm = { showClearConfirm = false; clearFaults() },
+                    onDismiss = { showClearConfirm = false }
                 )
             }
 
@@ -441,7 +568,7 @@ private fun TopBar(title: String, onMenuClick: () -> Unit) {
     Box(
         modifier = Modifier
             .fillMaxWidth()
-            .background(Red)
+            .background(Purple)
             .statusBarsPadding()
             .padding(horizontal = 8.dp, vertical = 8.dp),
         contentAlignment = Alignment.Center
@@ -516,7 +643,7 @@ private fun ParametersScreen(
             if (connected) {
                 Button(
                     onClick = onDisconnect,
-                    colors = ButtonDefaults.buttonColors(containerColor = Red),
+                    colors = ButtonDefaults.buttonColors(containerColor = Purple),
                     modifier = Modifier.padding(start = 12.dp)
                 ) {
                     Text("Disconnect", color = Color.White, fontSize = 13.sp)
@@ -545,7 +672,7 @@ private fun ParameterRow(p: ObdParameter, value: String?) {
             modifier = Modifier
                 .size(width = 58.dp, height = 46.dp)
                 .clip(RoundedCornerShape(6.dp))
-                .background(Red),
+                .background(Purple),
             contentAlignment = Alignment.Center
         ) {
             Text(
@@ -672,7 +799,7 @@ private fun InfoScreen(
                 Button(
                     onClick = onRead,
                     enabled = connected && !loading,
-                    colors = ButtonDefaults.buttonColors(containerColor = Red),
+                    colors = ButtonDefaults.buttonColors(containerColor = Purple),
                     modifier = Modifier.fillMaxWidth()
                 ) {
                     Text(if (loading) "It is read..." else "Read the informations", color = Color.White)
@@ -760,6 +887,7 @@ private fun InfoLine(label: String, value: String?) {
 private fun MainMenuDialog(
     onParams: () -> Unit,
     onInfo: () -> Unit,
+    onFaults: () -> Unit,
     onDevices: () -> Unit,
     onDismiss: () -> Unit
 ) {
@@ -769,11 +897,14 @@ private fun MainMenuDialog(
         title = { Text("Menu", color = Color.White) },
         text = {
             Column {
+                MenuItem("Parameters", onParams)
+                HorizontalDivider(color = Color(0xFF2A2A2A))
                 MenuItem("Bluetooth Device", onDevices)
                 HorizontalDivider(color = Color(0xFF2A2A2A))
                 MenuItem("Vehicle Information", onInfo)
                 HorizontalDivider(color = Color(0xFF2A2A2A))
-                MenuItem("Parameters", onParams)
+                MenuItem("Trouble Codes", onFaults)
+                HorizontalDivider(color = Color(0xFF2A2A2A))
             }
         },
         confirmButton = {},
@@ -827,7 +958,7 @@ private fun DeviceDialog(
                         ) {
                             Text(
                                 text = if (isCurrent) "${d.name}  ✓" else d.name,
-                                color = if (isCurrent) Red else Color.White,
+                                color = if (isCurrent) Purple else Color.White,
                                 fontSize = 16.sp,
                                 fontWeight = FontWeight.SemiBold
                             )
@@ -840,11 +971,140 @@ private fun DeviceDialog(
         },
         confirmButton = {
             if (connected != null) {
-                TextButton(onClick = onDisconnect) { Text("Disconnect", color = Red) }
+                TextButton(onClick = onDisconnect) { Text("Disconnect", color = Purple) }
             }
         },
         dismissButton = {
             TextButton(onClick = onDismiss) { Text("Close", color = Color.White) }
+        }
+    )
+}
+
+// ───────────────────────── Ecranul Fault Codes ─────────────────────────
+
+@Composable
+private fun FaultsScreen(
+    faults: DtcState,
+    connected: Boolean,
+    loading: Boolean,
+    onRead: () -> Unit,
+    onClear: () -> Unit,
+    onMenuClick: () -> Unit
+) {
+    Column(modifier = Modifier.fillMaxSize().background(Bg)) {
+        TopBar("Trouble codes", onMenuClick)
+
+        Column(
+            modifier = Modifier
+                .fillMaxSize()
+                .verticalScroll(rememberScrollState())
+                .navigationBarsPadding()
+                .padding(16.dp),
+            verticalArrangement = Arrangement.spacedBy(16.dp)
+        ) {
+            SectionCard("Vehicle status") {
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.spacedBy(12.dp)
+                ) {
+                    Button(
+                        onClick = onRead,
+                        enabled = connected && !loading,
+                        colors = ButtonDefaults.buttonColors(containerColor = Purple),
+                        modifier = Modifier.weight(1f)
+                    ) {
+                        Text(if (loading) "Working..." else "Read codes", color = Color.White)
+                    }
+                    Button(
+                        onClick = onClear,
+                        enabled = connected && !loading,
+                        colors = ButtonDefaults.buttonColors(containerColor = Color(0xFF2A2A2A)),
+                        modifier = Modifier.weight(1f)
+                    ) {
+                        Text("Clear codes", color = Red)
+                    }
+                }
+
+                if (!connected) {
+                    Text(
+                        "Firstly connect to a device (menu -> Bluetooth Device).",
+                        color = TextDim,
+                        fontSize = 12.sp,
+                        modifier = Modifier.padding(top = 8.dp)
+                    )
+                }
+                faults.message?.let {
+                    Text(it, color = TextDim, fontSize = 12.sp, modifier = Modifier.padding(top = 8.dp))
+                }
+
+                Spacer(Modifier.height(8.dp))
+                InfoLine(
+                    "Check engine light",
+                    faults.milOn?.let { if (it) "ON" else "OFF" }
+                )
+                InfoLine("Codes reported by ECU", faults.dtcCount?.toString())
+            }
+
+            DtcSection("Stored codes", faults.stored)
+            DtcSection("Pending codes", faults.pending)
+            DtcSection("Permanent codes", faults.permanent)
+        }
+    }
+}
+
+@Composable
+private fun DtcSection(title: String, codes: List<String>?) {
+    SectionCard(title) {
+        when {
+            codes == null -> Text("-", color = TextDim, fontSize = 14.sp)
+            codes.isEmpty() -> Text("No codes", color = TextDim, fontSize = 14.sp)
+            else -> Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
+                codes.forEach { DtcRow(it) }
+            }
+        }
+    }
+}
+
+@Composable
+private fun DtcRow(code: String) {
+    Row(verticalAlignment = Alignment.CenterVertically) {
+        Box(
+            modifier = Modifier
+                .clip(RoundedCornerShape(6.dp))
+                .background(Purple)
+                .padding(horizontal = 10.dp, vertical = 8.dp),
+            contentAlignment = Alignment.Center
+        ) {
+            Text(code, color = Color.White, fontWeight = FontWeight.Bold, fontSize = 15.sp)
+        }
+        Text(
+            text = DtcDescriptions.describe(code),
+            color = TextMain,
+            fontSize = 13.sp,
+            modifier = Modifier.weight(1f).padding(start = 12.dp)
+        )
+    }
+}
+
+@Composable
+private fun ClearFaultsDialog(onConfirm: () -> Unit, onDismiss: () -> Unit) {
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        containerColor = Card,
+        title = { Text("Clear trouble codes?", color = Color.White) },
+        text = {
+            Text(
+                "This erases the stored codes and freeze-frame data and turns off the check-engine light. " +
+                        "The fault itself is not repaired and the code returns if it is still present. " +
+                        "Note the codes down first. Use with the ignition ON and the engine OFF.",
+                color = TextDim
+            )
+        },
+        confirmButton = {
+            TextButton(onClick = onConfirm) { Text("Clear", color = Purple) }
+        },
+        dismissButton = {
+            TextButton(onClick = onDismiss) { Text("Cancel", color = Color.White) }
         }
     )
 }
