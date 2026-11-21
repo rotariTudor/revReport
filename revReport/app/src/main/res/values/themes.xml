@@ -1,5 +1,15 @@
 <?xml version="1.0" encoding="utf-8"?>
 <resources>
 
-    <style name="Theme.RevReport" parent="android:Theme.Material.Light.NoActionBar" />
+    <!-- Tema aplicației: întunecată, ca să nu apară flash alb (la pornire, rotație, tastatură) -->
+    <style name="Theme.RevReport" parent="android:Theme.Material.NoActionBar">
+        <item name="android:windowBackground">@color/app_background</item>
+    </style>
+
+    <!-- Tema de pornire (splash). După ce se încarcă aplicația, trece automat pe Theme.RevReport -->
+    <style name="Theme.RevReport.Starting" parent="Theme.SplashScreen">
+        <item name="windowSplashScreenBackground">@color/app_background</item>
+        <item name="windowSplashScreenAnimatedIcon">@drawable/ic_splash</item>
+        <item name="postSplashScreenTheme">@style/Theme.RevReport</item>
+    </style>
 </resources>

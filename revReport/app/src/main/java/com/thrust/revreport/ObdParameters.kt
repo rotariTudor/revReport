@@ -44,6 +44,9 @@ val obdParameters = listOf(
     ObdParameter("map", "MAP", "Intake manifold absolute pressure", "kPa", "010B") { it.a()?.toDouble() },
     ObdParameter("load", "LOAD", "Calculated engine load", "%", "0104") { it.a()?.let { v -> v * 100.0 / 255.0 } },
     ObdParameter("vpwr", "VPWR", "Control module voltage", "V", "0142", decimals = 2) { it.ab()?.let { v -> v / 1000.0 } },
+    ObdParameter("fuel", "FUEL", "Fuel level", "%", "012F") { it.a()?.let { v -> v * 100.0 / 255.0 } },
+    ObdParameter("oilt", "OIL", "Engine oil temperature", "°C", "015C") { it.a()?.let { v -> v - 40.0 } },
+    ObdParameter("cat", "CAT", "Catalyst temperature (bank 1, sensor 1)", "°C", "013C") { it.ab()?.let { v -> v / 10.0 - 40.0 } },
 
     // Diesel engines do not have spark ignition
     ObdParameter(

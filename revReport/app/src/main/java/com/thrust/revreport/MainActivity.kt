@@ -19,16 +19,25 @@ import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.ExperimentalLayoutApi
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
+import androidx.compose.foundation.layout.WindowInsets
+import androidx.compose.foundation.layout.WindowInsetsSides
+import androidx.compose.foundation.layout.displayCutout
+import androidx.compose.foundation.layout.fillMaxHeight
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.heightIn
+import androidx.compose.foundation.layout.navigationBars
 import androidx.compose.foundation.layout.navigationBarsPadding
+import androidx.compose.foundation.layout.only
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.statusBarsPadding
+import androidx.compose.foundation.layout.union
+import androidx.compose.foundation.layout.windowInsetsPadding
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.rememberScrollState
@@ -57,12 +66,14 @@ import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.Path
 import androidx.compose.ui.graphics.StrokeCap
 import androidx.compose.ui.graphics.drawscope.Stroke
+import androidx.compose.ui.platform.LocalConfiguration
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.core.content.ContextCompat
+import androidx.core.splashscreen.SplashScreen.Companion.installSplashScreen
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.cancelAndJoin
@@ -71,8 +82,9 @@ import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 
-private val Purple = Color(0xFF673AB7)
-private val Red = Color(0xFFB00020);
+//private val Purple = Color(0xFF673AB7)
+private val Orange = Color(0xFFEF6C00)
+private val Red = Color(0xFFB00020)
 private val Bg = Color(0xFF0E0E0E)
 private val Card = Color(0xFF1C1C1C)
 private val TextMain = Color.White
@@ -100,6 +112,7 @@ data class DtcState(
     val permanent: List<String>? = null,
     val milOn: Boolean? = null,
     val dtcCount: Int? = null,
+    val readiness: Readiness? = null,
     val message: String? = null
 )
 
@@ -128,8 +141,10 @@ class MainActivity : ComponentActivity() {
 
     private lateinit var btManager: revReportBluetoothManagement
 
+    @OptIn(ExperimentalLayoutApi::class)
     @SuppressLint("MissingPermission")
     override fun onCreate(savedInstanceState: Bundle?) {
+        installSplashScreen()   // trebuie apelat înainte de super.onCreate
         super.onCreate(savedInstanceState)
 
         val bluetoothManager = getSystemService(BluetoothManager::class.java)
@@ -149,6 +164,8 @@ class MainActivity : ComponentActivity() {
             var screen by remember { mutableStateOf(Screen.Params) }
             var profile by remember { mutableStateOf(VehicleProfile()) }
             var profileKnown by remember { mutableStateOf(false) }
+            // PID-urile de Mode 01 pe care le are mașina (null = încă necunoscut -> le arătăm pe toate)
+            var supported by remember { mutableStateOf<Set<Int>?>(null) }
             var info by remember { mutableStateOf(VehicleInfoState()) }
             var infoLoading by remember { mutableStateOf(false) }
             var vehicle by remember { mutableStateOf<VehicleId?>(null) }
@@ -176,31 +193,50 @@ class MainActivity : ComponentActivity() {
                 pollJob = null
             }
 
+            /** Șterge tot ce ține de mașina conectată, ca să nu rămână date vechi pe ecran. */
+            fun resetSession() {
+                connectedDevice = null
+                vehicle = null
+                profile = VehicleProfile()
+                profileKnown = false
+                supported = null
+                info = VehicleInfoState()
+                faults = DtcState()
+                values.clear()
+            }
+
             fun startPolling() {
                 stopPolling()
                 pollJob = coroutineScope.launch {
                     var failures = 0
+                    var cycle = 0
                     while (isActive) {
+                        var attempted = false
                         var gotAny = false
                         for (p in parametersFor(profile)) {
                             if (!isActive) break
-                            if (p.pid.isBlank()) continue // ex. AdBlue fără PID setat
+                            if (p.pid.isBlank()) continue                   // ex. AdBlue fără PID setat
+                            if (!isParamShown(p, supported)) continue       // mașina nu are acest PID
+                            // Viteza și turația se citesc la fiecare ciclu, restul la al 4-lea (afișaj mai rapid)
+                            if (cycle % 4 != 0 && p.key !in HERO_KEYS) continue
+                            attempted = true
                             val bytes = btManager.readPid(p.pid)
                             val v = bytes?.let { p.decode(it) }
                             values[p.key] = v?.let { "%.${p.decimals}f".format(it) }
                             if (v != null) gotAny = true
                         }
 
-                        failures = if (gotAny) 0 else failures + 1
-                        if (failures >= 3) {
-                            status = "Connection lost"
-                            connectedDevice = null
-                            vehicle = null
-                            profile = VehicleProfile()
-                            profileKnown = false
-                            btManager.closeConnection()
-                            break
+                        if (attempted) {
+                            failures = if (gotAny) 0 else failures + 1
+                            if (failures >= 5) {
+                                status = "Connection lost"
+                                resetSession()
+                                pollJob = null
+                                btManager.closeConnection()
+                                break
+                            }
                         }
+                        cycle++
                         delay(100)
                     }
                 }
@@ -209,11 +245,7 @@ class MainActivity : ComponentActivity() {
             fun disconnect() {
                 stopPolling()
                 btManager.closeConnection()
-                connectedDevice = null
-                vehicle = null
-                profile = VehicleProfile()
-                profileKnown = false
-                values.clear()
+                resetSession()
                 status = "Disconnected"
             }
 
@@ -232,11 +264,7 @@ class MainActivity : ComponentActivity() {
 
                 stopPolling()
                 btManager.closeConnection()
-                connectedDevice = null
-                vehicle = null
-                profile = VehicleProfile()
-                profileKnown = false
-                values.clear()
+                resetSession()
 
                 busy = true
                 coroutineScope.launch {
@@ -258,11 +286,22 @@ class MainActivity : ComponentActivity() {
                             connectedDevice = item
                             status = "Connected to ${item.name} · $atzResponse"
 
+                            // Prima comandă declanșează căutarea protocolului: o așteptăm
+                            status = "Searching for the car's protocol..."
+                            if (!btManager.warmUp()) {
+                                btManager.closeConnection()
+                                connectedDevice = null
+                                status = "The car does not respond. Turn the ignition ON and connect again."
+                                toast(status, true)
+                                return@launch
+                            }
+
                             // Detectăm automat dacă e hibrid / diesel
                             status = "Detecting the type of car..."
                             val detection = btManager.detectVehicle()
                             profile = detection.profile
                             profileKnown = true
+                            supported = detection.supportedPids.takeIf { it.isNotEmpty() }?.toSet()
                             status = "Connected to ${item.name} · $atzResponse"
 
                             // Identificăm mașina: VIN din mașină, apoi marcă/model/generație
@@ -283,7 +322,8 @@ class MainActivity : ComponentActivity() {
                                 startPolling()
                             }
                         } else {
-                            status = "Connected to ${item.name}, with no response"
+                            btManager.closeConnection()   // altfel socket-ul rămâne deschis
+                            status = "No response from the adapter (${item.name}). Is it a Bluetooth Classic ELM327?"
                             toast(status, true)
                         }
                     } catch (e: SecurityException) {
@@ -346,56 +386,7 @@ class MainActivity : ComponentActivity() {
                 openDevices()
             }
 
-            /** Citește VIN, combustibil și PID-urile suportate; apoi decodează VIN-ul online. */
-            fun readVehicleInfo() {
-                if (connectedDevice == null) {
-                    toast("Firstly connect to a device", true)
-                    return
-                }
-                if (infoLoading) return
-                infoLoading = true
-
-                coroutineScope.launch {
-                    val wasPolling = pollJob != null
-                    pollJob?.cancelAndJoin()   // nu trimitem două comenzi în același timp
-                    pollJob = null
-                    try {
-                        info = VehicleInfoState(message = "Reading the VIN...")
-                        val vin = btManager.readVin()
-
-                        info = info.copy(vin = vin, message = "Detecting the type of car...")
-                        val detection = btManager.detectVehicle()
-                        profile = detection.profile
-                        profileKnown = true
-
-                        info = info.copy(
-                            fuelType = detection.fuelCode?.let { fuelTypeName(it) },
-                            hybridDetected = detection.profile.hybrid,
-                            supportedPids = detection.supportedPids,
-                            message = if (vin != null) "Decoding the VIN online..." else "VIN is unavailable for this car"
-                        )
-
-                        if (vin != null) {
-                            val decoded = VinDecoder.decode(vin)
-                            if (decoded != null) cacheVinInfo(vin, decoded)
-                            val usable = decoded ?: cachedVinInfo(vin)
-                            vehicle = VehicleCatalog.identify(vin, usable)
-                            info = info.copy(
-                                decoded = usable,
-                                message = if (decoded == null) "Online decoding failed (internet?)" else null
-                            )
-                        }
-                    } catch (e: Exception) {
-                        Log.e("RevReport", "Error at reading information", e)
-                        info = info.copy(message = "Error: ${e.message}")
-                    } finally {
-                        infoLoading = false
-                        if (wasPolling && connectedDevice != null) startPolling()
-                    }
-                }
-            }
-
-            /** Oprește citirea live cât rulează blocul, apoi o repornește (nu trimitem două comenzi odată). */
+            /** Oprește citirea live cât rulează blocul, apoi o repornește. */
             suspend fun <T> withPollingPaused(block: suspend () -> T): T {
                 val wasPolling = pollJob != null
                 pollJob?.cancelAndJoin()
@@ -407,17 +398,72 @@ class MainActivity : ComponentActivity() {
                 }
             }
 
+            /** Citește VIN, combustibil și PID-urile suportate; apoi decodează VIN-ul online. */
+            fun readVehicleInfo() {
+                if (connectedDevice == null) {
+                    toast("Firstly connect to a device", true)
+                    return
+                }
+                if (infoLoading || faultsLoading) {
+                    toast("Another reading is in progress")
+                    return
+                }
+                infoLoading = true
+
+                coroutineScope.launch {
+                    try {
+                        withPollingPaused {
+                            info = VehicleInfoState(message = "Reading the VIN...")
+                            val vin = btManager.readVin()
+
+                            info = info.copy(vin = vin, message = "Detecting the type of car...")
+                            val detection = btManager.detectVehicle()
+                            profile = detection.profile
+                            profileKnown = true
+                            supported = detection.supportedPids.takeIf { it.isNotEmpty() }?.toSet()
+
+                            info = info.copy(
+                                fuelType = detection.fuelCode?.let { fuelTypeName(it) },
+                                hybridDetected = detection.profile.hybrid,
+                                supportedPids = detection.supportedPids,
+                                message = if (vin != null) "Decoding the VIN online..." else "VIN is unavailable for this car"
+                            )
+
+                            if (vin != null) {
+                                val decoded = VinDecoder.decode(vin)
+                                if (decoded != null) cacheVinInfo(vin, decoded)
+                                val usable = decoded ?: cachedVinInfo(vin)
+                                vehicle = VehicleCatalog.identify(vin, usable)
+                                info = info.copy(
+                                    decoded = usable,
+                                    message = if (decoded == null) "Online decoding failed (internet?)" else null
+                                )
+                            }
+                        }
+                    } catch (e: kotlinx.coroutines.CancellationException) {
+                        throw e
+                    } catch (e: Exception) {
+                        Log.e("RevReport", "Error at reading information", e)
+                        info = info.copy(message = "Error: ${e.message}")
+                    } finally {
+                        infoLoading = false
+                    }
+                }
+            }
+
             suspend fun loadFaults(): DtcState {
                 val mil = btManager.readMilStatus()
                 val stored = btManager.readDtcs("03")
                 val pending = btManager.readDtcs("07")
                 val permanent = btManager.readDtcs("0A")
+                val readiness = btManager.readReadiness()
                 return DtcState(
                     stored = stored,
                     pending = pending,
                     permanent = permanent,
                     milOn = mil?.first,
                     dtcCount = mil?.second,
+                    readiness = readiness,
                     message = if (stored == null && pending == null && permanent == null)
                         "No valid response from the vehicle." else null
                 )
@@ -428,7 +474,7 @@ class MainActivity : ComponentActivity() {
                     toast("Firstly connect to a device", true)
                     return
                 }
-                if (faultsLoading) return
+                if (faultsLoading || infoLoading) return
                 faultsLoading = true
 
                 coroutineScope.launch {
@@ -453,12 +499,19 @@ class MainActivity : ComponentActivity() {
                     toast("Firstly connect to a device", true)
                     return
                 }
-                if (faultsLoading) return
+                if (faultsLoading || infoLoading) return
                 faultsLoading = true
 
                 coroutineScope.launch {
                     try {
                         withPollingPaused {
+                            if (btManager.isStationary() == false) {
+                                faults = faults.copy(
+                                    message = "Cannot clear codes while the engine is running or the car is moving. " +
+                                            "Stop, turn the engine OFF (ignition ON) and try again."
+                                )
+                                return@withPollingPaused
+                            }
                             faults = faults.copy(message = "Clearing fault codes...")
                             val (ok, raw) = btManager.clearDtcs()
                             Log.d("RevReport", "Clear DTC response: $raw")
@@ -489,36 +542,47 @@ class MainActivity : ComponentActivity() {
 
             BackHandler(enabled = screen != Screen.Params) { screen = Screen.Params }
 
-            when (screen) {
-                Screen.Params -> ParametersScreen(
-                    vehicle = vehicle,
-                    status = status,
-                    params = params,
-                    values = values,
-                    connected = connectedDevice != null,
-                    onDisconnect = { disconnect() },
-                    onMenuClick = { showMainMenu = true }
-                )
+            Box(
+                modifier = Modifier
+                    .fillMaxSize()
+                    .background(Bg)
+                    .windowInsetsPadding(
+                        WindowInsets.displayCutout.union(WindowInsets.navigationBars)
+                            .only(WindowInsetsSides.Horizontal)
+                    )
+            ) {
+                when (screen) {
+                    Screen.Params -> ParametersScreen(
+                        vehicle = vehicle,
+                        status = status,
+                        params = params,
+                        values = values,
+                        supported = supported,
+                        connected = connectedDevice != null,
+                        onDisconnect = { disconnect() },
+                        onMenuClick = { showMainMenu = true }
+                    )
 
-                Screen.Info -> InfoScreen(
-                    vehicle = vehicle,
-                    profile = profile,
-                    profileKnown = profileKnown,
-                    info = info,
-                    connected = connectedDevice != null,
-                    loading = infoLoading,
-                    onRead = { readVehicleInfo() },
-                    onMenuClick = { showMainMenu = true }
-                )
+                    Screen.Info -> InfoScreen(
+                        vehicle = vehicle,
+                        profile = profile,
+                        profileKnown = profileKnown,
+                        info = info,
+                        connected = connectedDevice != null,
+                        loading = infoLoading,
+                        onRead = { readVehicleInfo() },
+                        onMenuClick = { showMainMenu = true }
+                    )
 
-                Screen.Faults -> FaultsScreen(
-                    faults = faults,
-                    connected = connectedDevice != null,
-                    loading = faultsLoading,
-                    onRead = { readFaults() },
-                    onClear = { showClearConfirm = true },
-                    onMenuClick = { showMainMenu = true }
-                )
+                    Screen.Faults -> FaultsScreen(
+                        faults = faults,
+                        connected = connectedDevice != null,
+                        loading = faultsLoading,
+                        onRead = { readFaults() },
+                        onClear = { showClearConfirm = true },
+                        onMenuClick = { showMainMenu = true }
+                    )
+                }
             }
 
             if (showMainMenu) {
@@ -568,7 +632,7 @@ private fun TopBar(title: String, onMenuClick: () -> Unit) {
     Box(
         modifier = Modifier
             .fillMaxWidth()
-            .background(Purple)
+            .background(Orange)
             .statusBarsPadding()
             .padding(horizontal = 8.dp, vertical = 8.dp),
         contentAlignment = Alignment.Center
@@ -611,22 +675,25 @@ private fun ParametersScreen(
     status: String,
     params: List<ObdParameter>,
     values: Map<String, String?>,
+    supported: Set<Int>?,
     connected: Boolean,
     onDisconnect: () -> Unit,
     onMenuClick: () -> Unit
 ) {
+    // Pe ecran lat (landscape / tabletă) încap mai multe plăci pe rând
+    val wide = LocalConfiguration.current.screenWidthDp >= 600
+    val tileColumns = if (wide) 5 else 3
+    val barColumns = if (wide) 3 else 2
+
+    val visible = params.filter { isParamShown(it, supported) }
+    val byKey = visible.associateBy { it.key }
+    val hero = HERO_KEYS.mapNotNull { byKey[it] }
+    val temps = TEMP_KEYS.mapNotNull { byKey[it] }
+    val levels = LEVEL_KEYS.mapNotNull { byKey[it] }
+    val rest = visible.filter { it.key !in HERO_KEYS && it.key !in TEMP_KEYS && it.key !in LEVEL_KEYS }
+
     Column(modifier = Modifier.fillMaxSize().background(Bg)) {
         TopBar("Parameters", onMenuClick)
-
-        vehicle?.let {
-            Text(
-                text = it.title,
-                color = Color.White,
-                fontSize = 18.sp,
-                fontWeight = FontWeight.Bold,
-                modifier = Modifier.padding(start = 16.dp, end = 16.dp, top = 12.dp)
-            )
-        }
 
         Row(
             modifier = Modifier
@@ -634,16 +701,21 @@ private fun ParametersScreen(
                 .padding(horizontal = 16.dp, vertical = 6.dp),
             verticalAlignment = Alignment.CenterVertically
         ) {
-            Text(
-                text = status,
-                color = TextDim,
-                fontSize = 12.sp,
-                modifier = Modifier.weight(1f)
-            )
+            Column(modifier = Modifier.weight(1f)) {
+                vehicle?.let {
+                    Text(
+                        text = it.title,
+                        color = Color.White,
+                        fontSize = 16.sp,
+                        fontWeight = FontWeight.Bold
+                    )
+                }
+                Text(text = status, color = TextDim, fontSize = 12.sp)
+            }
             if (connected) {
                 Button(
                     onClick = onDisconnect,
-                    colors = ButtonDefaults.buttonColors(containerColor = Purple),
+                    colors = ButtonDefaults.buttonColors(containerColor = Orange),
                     modifier = Modifier.padding(start = 12.dp)
                 ) {
                     Text("Disconnect", color = Color.White, fontSize = 13.sp)
@@ -651,96 +723,245 @@ private fun ParametersScreen(
             }
         }
 
-        LazyColumn(modifier = Modifier.fillMaxSize().navigationBarsPadding()) {
-            items(params, key = { it.key }) { p ->
-                ParameterRow(p, values[p.key])
-                HorizontalDivider(color = Color(0xFF2A2A2A))
-            }
-        }
-    }
-}
-
-@Composable
-private fun ParameterRow(p: ObdParameter, value: String?) {
-    Row(
-        modifier = Modifier
-            .fillMaxWidth()
-            .padding(horizontal = 12.dp, vertical = 8.dp),
-        verticalAlignment = Alignment.CenterVertically
-    ) {
-        Box(
-            modifier = Modifier
-                .size(width = 58.dp, height = 46.dp)
-                .clip(RoundedCornerShape(6.dp))
-                .background(Purple),
-            contentAlignment = Alignment.Center
-        ) {
-            Text(
-                text = p.badge,
-                color = Color.White,
-                fontWeight = FontWeight.Bold,
-                fontSize = if (p.badge.length > 4) 11.sp else 15.sp,
-                textAlign = TextAlign.Center
-            )
-        }
-
         Column(
-            modifier = Modifier.weight(1f).padding(horizontal = 12.dp),
-            verticalArrangement = Arrangement.spacedBy(2.dp)
+            modifier = Modifier
+                .fillMaxSize()
+                .verticalScroll(rememberScrollState())
+                .navigationBarsPadding()
+                .padding(horizontal = 12.dp, vertical = 4.dp),
+            verticalArrangement = Arrangement.spacedBy(10.dp)
         ) {
-            Text(p.name, color = TextDim, fontSize = 13.sp)
-
-            if (p.pid.isBlank()) {
-                Text("Unset PID (see AdBlue PID)", color = TextDim, fontSize = 14.sp)
-            } else {
-                Row(verticalAlignment = Alignment.Bottom) {
-                    Text(
-                        text = value ?: "-",
-                        color = TextMain,
-                        fontSize = 20.sp,
-                        fontWeight = FontWeight.Bold
-                    )
-                    if (value != null) {
-                        Text(
-                            text = " ${p.unit}",
-                            color = TextMain,
-                            fontSize = 15.sp,
-                            modifier = Modifier.padding(bottom = 2.dp)
-                        )
-                    }
+            if (hero.isNotEmpty()) {
+                TileGrid(hero, columns = 2) { p, m ->
+                    StatTile(m, shortLabel(p), values[p.key], p.unit, valueColor(p.key, values[p.key]), big = true)
                 }
             }
+            if (temps.isNotEmpty()) {
+                SectionLabel("Temperatures")
+                TileGrid(temps, tileColumns) { p, m ->
+                    StatTile(m, shortLabel(p), values[p.key], p.unit, valueColor(p.key, values[p.key]), big = false)
+                }
+            }
+            if (levels.isNotEmpty()) {
+                SectionLabel("Levels & load")
+                TileGrid(levels, barColumns) { p, m ->
+                    LevelBar(m, shortLabel(p), values[p.key], p.unit, p.key)
+                }
+            }
+            if (rest.isNotEmpty()) {
+                SectionLabel("Engine & electrical")
+                TileGrid(rest, tileColumns) { p, m ->
+                    StatTile(m, shortLabel(p), values[p.key], p.unit, valueColor(p.key, values[p.key]), big = false)
+                }
+            }
+            Spacer(Modifier.height(8.dp))
         }
+    }
+}
 
-        ChartIcon()
+// Ce parametru merge în ce grup
+private val HERO_KEYS = listOf("vss", "rpm")
+private val TEMP_KEYS = listOf("ect", "oilt", "cat", "iat", "aat")
+private val LEVEL_KEYS = listOf("fuel", "hvbat", "adblue", "load", "tp")
+
+private val OkGreen = Color(0xFF4CAF50)
+private val WarnYellow = Color(0xFFFFD600)
+private val WarnOrange = Color(0xFFFFA000)
+private val ColdBlue = Color(0xFF42A5F5)
+private val BadRed = Color(0xFFE53935)
+
+/** Parametrul apare doar dacă mașina îl suportă (când știm lista) și are PID setat. */
+private fun isParamShown(p: ObdParameter, supported: Set<Int>?): Boolean {
+    if (p.pid.isBlank()) return false
+    if (supported == null || !p.pid.startsWith("01")) return true
+    val n = p.pid.substring(2).toIntOrNull(16) ?: return true
+    return n in supported
+}
+
+private fun shortLabel(p: ObdParameter): String = when (p.key) {
+    "vss" -> "Speed"
+    "rpm" -> "Engine RPM"
+    "ect" -> "Coolant"
+    "oilt" -> "Oil"
+    "cat" -> "Catalyst"
+    "iat" -> "Intake air"
+    "aat" -> "Outside"
+    "fuel" -> "Fuel"
+    "hvbat" -> "Hybrid battery"
+    "adblue" -> "AdBlue"
+    "load" -> "Engine load"
+    "tp" -> "Throttle"
+    "maf" -> "Air flow"
+    "map" -> "Manifold"
+    "spark" -> "Ignition"
+    "vpwr" -> "12 V battery"
+    else -> p.name
+}
+
+/** Culoarea valorii după prag. Pragurile sunt orientative; le poți ajusta aici. */
+private fun valueColor(key: String, raw: String?): Color {
+    val v = raw?.replace(',', '.')?.toDoubleOrNull() ?: return TextMain
+    return when (key) {
+        "tp" -> when {
+            v < 50 -> OkGreen
+            v <= 75 -> WarnOrange
+            else -> BadRed
+        }
+        "load" -> when {
+            v < 50 -> OkGreen
+            v <= 75 -> WarnOrange
+            else -> BadRed
+        }
+        "ect" -> when {
+            v < 60 -> ColdBlue
+            v <= 105 -> OkGreen
+            v <= 115 -> WarnOrange
+            else -> BadRed
+        }
+        "oilt" -> when {
+            v < 60 -> ColdBlue
+            v <= 120 -> OkGreen
+            v <= 135 -> WarnOrange
+            else -> BadRed
+        }
+        "iat" -> when {
+            v <= 60 -> TextMain
+            v <= 80 -> WarnOrange
+            else -> BadRed
+        }
+        "fuel", "adblue" -> when {
+            v < 15 -> BadRed
+            v < 30 -> WarnOrange
+            else -> OkGreen
+        }
+        "hvbat" -> when {
+            v < 15 -> BadRed
+            v < 30 -> WarnOrange
+            else -> OkGreen
+        }
+        "cat" -> when {
+            v < 400 -> ColdBlue
+            v < 870 -> OkGreen
+            else -> WarnOrange
+        }
+        "vpwr" -> if (v in 11.8..15.2) OkGreen else BadRed
+        else -> TextMain
     }
 }
 
 @Composable
-private fun ChartIcon() {
-    Canvas(modifier = Modifier.size(38.dp)) {
-        val w = size.width
-        val h = size.height
-        val line = Color.White
+private fun SectionLabel(text: String) {
+    Text(
+        text = text.uppercase(),
+        color = TextDim,
+        fontSize = 11.sp,
+        fontWeight = FontWeight.Bold,
+        modifier = Modifier.padding(start = 4.dp, top = 4.dp)
+    )
+}
 
-        drawRoundRect(
-            color = line,
-            cornerRadius = CornerRadius(8f, 8f),
-            style = Stroke(width = 2f)
-        )
-
-        val pts = listOf(
-            Offset(w * 0.18f, h * 0.72f),
-            Offset(w * 0.40f, h * 0.45f),
-            Offset(w * 0.60f, h * 0.60f),
-            Offset(w * 0.82f, h * 0.25f)
-        )
-        val path = Path().apply {
-            moveTo(pts[0].x, pts[0].y)
-            pts.drop(1).forEach { lineTo(it.x, it.y) }
+/** Aranjează elementele în rânduri de câte [columns], toate cu aceeași lățime. */
+@Composable
+private fun <T> TileGrid(
+    items: List<T>,
+    columns: Int,
+    tile: @Composable (T, Modifier) -> Unit
+) {
+    Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+        items.chunked(columns).forEach { row ->
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.spacedBy(8.dp)
+            ) {
+                row.forEach { item -> tile(item, Modifier.weight(1f)) }
+                repeat(columns - row.size) { Spacer(Modifier.weight(1f)) }
+            }
         }
-        drawPath(path, color = line, style = Stroke(width = 2f))
-        pts.forEach { drawCircle(color = line, radius = 3f, center = it) }
+    }
+}
+
+/** Placă cu etichetă mică sus și valoare mare. [big] = placa mare (viteză, turație). */
+@Composable
+private fun StatTile(
+    modifier: Modifier,
+    label: String,
+    value: String?,
+    unit: String,
+    color: Color,
+    big: Boolean
+) {
+    Column(
+        modifier = modifier
+            .clip(RoundedCornerShape(10.dp))
+            .background(Card)
+            .padding(horizontal = 10.dp, vertical = if (big) 10.dp else 8.dp)
+    ) {
+        Text(label, color = TextDim, fontSize = if (big) 13.sp else 11.sp, maxLines = 1)
+        Row(verticalAlignment = Alignment.Bottom) {
+            Text(
+                text = value ?: "–",
+                color = if (value == null) TextDim else color,
+                fontSize = if (big) 48.sp else 24.sp,
+                fontWeight = FontWeight.Bold,
+                maxLines = 1
+            )
+            if (value != null && unit.isNotBlank()) {
+                Text(
+                    text = unit,
+                    color = TextDim,
+                    fontSize = if (big) 16.sp else 12.sp,
+                    modifier = Modifier.padding(start = 3.dp, bottom = if (big) 8.dp else 4.dp)
+                )
+            }
+        }
+    }
+}
+
+/** Nivel (0–100%) ca bară: combustibil, baterie hibrid, AdBlue, sarcină, accelerație. */
+@Composable
+private fun LevelBar(
+    modifier: Modifier,
+    label: String,
+    value: String?,
+    unit: String,
+    key: String
+) {
+    val number = value?.replace(',', '.')?.toDoubleOrNull()
+    val fraction = ((number ?: 0.0) / 100.0).coerceIn(0.0, 1.0).toFloat()
+    val c = valueColor(key, value)
+    val barColor = if (c == TextMain) Orange else c
+
+    Column(
+        modifier = modifier
+            .clip(RoundedCornerShape(10.dp))
+            .background(Card)
+            .padding(horizontal = 10.dp, vertical = 8.dp)
+    ) {
+        Row(verticalAlignment = Alignment.CenterVertically) {
+            Text(label, color = TextDim, fontSize = 12.sp, maxLines = 1, modifier = Modifier.weight(1f))
+            Text(
+                text = if (value == null) "–" else "$value$unit",
+                color = if (value == null) TextDim else c,
+                fontSize = 18.sp,
+                fontWeight = FontWeight.Bold,
+                maxLines = 1
+            )
+        }
+        Spacer(Modifier.height(6.dp))
+        Box(
+            modifier = Modifier
+                .fillMaxWidth()
+                .height(10.dp)
+                .clip(RoundedCornerShape(5.dp))
+                .background(Color(0xFF2E2E2E))
+        ) {
+            Box(
+                modifier = Modifier
+                    .fillMaxHeight()
+                    .fillMaxWidth(fraction)
+                    .background(barColor)
+            )
+        }
     }
 }
 
@@ -799,7 +1020,7 @@ private fun InfoScreen(
                 Button(
                     onClick = onRead,
                     enabled = connected && !loading,
-                    colors = ButtonDefaults.buttonColors(containerColor = Purple),
+                    colors = ButtonDefaults.buttonColors(containerColor = Orange),
                     modifier = Modifier.fillMaxWidth()
                 ) {
                     Text(if (loading) "It is read..." else "Read the informations", color = Color.White)
@@ -958,7 +1179,7 @@ private fun DeviceDialog(
                         ) {
                             Text(
                                 text = if (isCurrent) "${d.name}  ✓" else d.name,
-                                color = if (isCurrent) Purple else Color.White,
+                                color = if (isCurrent) Orange else Color.White,
                                 fontSize = 16.sp,
                                 fontWeight = FontWeight.SemiBold
                             )
@@ -971,7 +1192,7 @@ private fun DeviceDialog(
         },
         confirmButton = {
             if (connected != null) {
-                TextButton(onClick = onDisconnect) { Text("Disconnect", color = Purple) }
+                TextButton(onClick = onDisconnect) { Text("Disconnect", color = Orange) }
             }
         },
         dismissButton = {
@@ -1010,7 +1231,7 @@ private fun FaultsScreen(
                     Button(
                         onClick = onRead,
                         enabled = connected && !loading,
-                        colors = ButtonDefaults.buttonColors(containerColor = Purple),
+                        colors = ButtonDefaults.buttonColors(containerColor = Orange),
                         modifier = Modifier.weight(1f)
                     ) {
                         Text(if (loading) "Working..." else "Read codes", color = Color.White)
@@ -1048,6 +1269,50 @@ private fun FaultsScreen(
             DtcSection("Stored codes", faults.stored)
             DtcSection("Pending codes", faults.pending)
             DtcSection("Permanent codes", faults.permanent)
+            ReadinessSection(faults.readiness)
+        }
+    }
+}
+
+@Composable
+private fun ReadinessSection(readiness: Readiness?) {
+    SectionCard("Readiness monitors") {
+        when {
+            readiness == null -> Text("-", color = TextDim, fontSize = 14.sp)
+            readiness.monitors.isEmpty() ->
+                Text("The car does not report any readiness monitors.", color = TextDim, fontSize = 14.sp)
+            else -> Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                val total = readiness.monitors.size
+                val done = total - readiness.notReady.size
+                Text(
+                    if (readiness.allReady) "All $total monitors ready" else "$done of $total monitors ready",
+                    color = if (readiness.allReady) Color(0xFF4CAF50) else Color(0xFFFFA000),
+                    fontWeight = FontWeight.Bold,
+                    fontSize = 15.sp
+                )
+                readiness.monitors.forEach { m ->
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.SpaceBetween
+                    ) {
+                        Text(m.name, color = TextMain, fontSize = 14.sp)
+                        Text(
+                            if (m.ready) "Ready" else "Not ready",
+                            color = if (m.ready) Color(0xFF4CAF50) else Color(0xFFFFA000),
+                            fontWeight = FontWeight.Bold,
+                            fontSize = 14.sp
+                        )
+                    }
+                }
+                if (!readiness.allReady) {
+                    Text(
+                        "Monitors that are not ready usually mean the codes were just cleared or the battery " +
+                                "was disconnected. The car needs to be driven for a while to finish them.",
+                        color = TextDim,
+                        fontSize = 12.sp
+                    )
+                }
+            }
         }
     }
 }
@@ -1071,7 +1336,7 @@ private fun DtcRow(code: String) {
         Box(
             modifier = Modifier
                 .clip(RoundedCornerShape(6.dp))
-                .background(Purple)
+                .background(Orange)
                 .padding(horizontal = 10.dp, vertical = 8.dp),
             contentAlignment = Alignment.Center
         ) {
@@ -1096,12 +1361,14 @@ private fun ClearFaultsDialog(onConfirm: () -> Unit, onDismiss: () -> Unit) {
             Text(
                 "This erases the stored codes and freeze-frame data and turns off the check-engine light. " +
                         "The fault itself is not repaired and the code returns if it is still present. " +
+                        "It also resets the readiness monitors to \"not ready\" until the car has been driven for a while, " +
+                        "so do not clear codes right before an inspection. " +
                         "Note the codes down first. Use with the ignition ON and the engine OFF.",
                 color = TextDim
             )
         },
         confirmButton = {
-            TextButton(onClick = onConfirm) { Text("Clear", color = Purple) }
+            TextButton(onClick = onConfirm) { Text("Clear", color = Orange) }
         },
         dismissButton = {
             TextButton(onClick = onDismiss) { Text("Cancel", color = Color.White) }
