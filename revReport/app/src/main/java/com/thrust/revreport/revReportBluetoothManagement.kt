@@ -14,6 +14,7 @@ import java.io.IOException
 import java.io.InputStream
 import java.io.OutputStream
 import java.util.UUID
+import kotlinx.coroutines.NonCancellable
 
 class revReportBluetoothManagement(val bluetoothAdapter: BluetoothAdapter?) {
 
@@ -150,6 +151,7 @@ class revReportBluetoothManagement(val bluetoothAdapter: BluetoothAdapter?) {
      * Răspunsul începe cu modul + 0x40 (01 -> 41, 22 -> 62).
      */
     suspend fun readPid(pid: String): List<Int>? {
+        if (pid.contains(':')) return readEnhanced(pid)   // PID specific mărcii, ex. "7E2:2101"
         val clean = sanitizeResponse(request(pid)).uppercase()
         val mode = pid.substring(0, 2).toIntOrNull(16) ?: return null
         val prefix = "%02X".format(mode + 0x40) + pid.substring(2).uppercase()
@@ -159,6 +161,43 @@ class revReportBluetoothManagement(val bluetoothAdapter: BluetoothAdapter?) {
             .chunked(2)
             .filter { it.length == 2 }
             .mapNotNull { it.toIntOrNull(16) }
+    }
+
+    /**
+     * PID specific producătorului, în forma "HEADER:COMANDĂ", ex. "7E2:2101" (Toyota, ECU hibrid).
+     * Întoarce octeții de date de după ecoul răspunsului (după "6101"), sau null.
+     * Header-ul standard (7DF) se restabilește mereu, chiar dacă citirea e anulată.
+     */
+    private suspend fun readEnhanced(spec: String): List<Int>? {
+        val header = spec.substringBefore(':').uppercase()
+        val cmd = spec.substringAfter(':').uppercase()
+        if (cmd.length < 4) return null
+        val mode = cmd.substring(0, 2).toIntOrNull(16) ?: return null
+        val prefix = "%02X".format(mode + 0x40) + cmd.substring(2)
+        try {
+            if (!sanitizeResponse(request("ATSH$header")).contains("OK")) return null
+            val hex = isoTpPayload(request(cmd, 3000))
+            val idx = hex.indexOf(prefix)
+            if (idx < 0) return null
+            val data = hex.substring(idx + prefix.length)
+                .chunked(2)
+                .filter { it.length == 2 }
+                .mapNotNull { it.toIntOrNull(16) }
+            Log.d("RevReport", "ENH $header $cmd -> $data")
+            return data
+        } finally {
+            withContext(NonCancellable) { request("ATSH7DF") }
+        }
+    }
+
+    /** Alătură cadrele ISO-TP ("0:", "1:", ...) sau ia linia simplă. Întoarce hex fără spații. */
+    private fun isoTpPayload(raw: String): String {
+        val lines = raw.split("\r", "\n")
+            .map { it.replace(" ", "").uppercase() }
+            .filter { it.isNotEmpty() }
+        val frames = lines.mapNotNull { Regex("^[0-9A-F]:([0-9A-F]+)$").find(it)?.groupValues?.get(1) }
+        if (frames.isNotEmpty()) return frames.joinToString("")
+        return lines.firstOrNull { l -> l.length % 2 == 0 && l.all { it in '0'..'9' || it in 'A'..'F' } } ?: ""
     }
 
     suspend fun readRpm(): Int? {

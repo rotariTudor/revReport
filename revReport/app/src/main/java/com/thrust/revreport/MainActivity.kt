@@ -12,6 +12,7 @@ import androidx.activity.ComponentActivity
 import androidx.activity.compose.BackHandler
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.compose.setContent
+import androidx.compose.runtime.LaunchedEffect
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.background
@@ -174,6 +175,36 @@ class MainActivity : ComponentActivity() {
             var showClearConfirm by remember { mutableStateOf(false) }
             val devices = remember { mutableStateListOf<DeviceItem>() }
             val values = remember { mutableStateMapOf<String, String?>() }
+            val unavailable = remember { mutableStateMapOf<String, Boolean>() }
+            var locationGranted by remember {
+                mutableStateOf(
+                    ContextCompat.checkSelfPermission(context, Manifest.permission.ACCESS_COARSE_LOCATION) ==
+                            PackageManager.PERMISSION_GRANTED
+                )
+            }
+            val locationLauncher = rememberLauncherForActivityResult(
+                ActivityResultContracts.RequestPermission()
+            ) { locationGranted = it }
+
+            LaunchedEffect(Unit) {
+                if (!locationGranted) locationLauncher.launch(Manifest.permission.ACCESS_COARSE_LOCATION)
+            }
+            // Temperatura telefonului: apare ca placă pe ecranul Parameters
+            LaunchedEffect(Unit) {
+                while (true) {
+                    values["phoneTemp"] = readPhoneTempC(context)?.let { "%.0f".format(it) }
+                    delay(5_000)
+                }
+            }
+            // Temperatura de afară (Open-Meteo); dacă nu avem locație, reîncearcă după 1 minut
+            LaunchedEffect(locationGranted) {
+                if (!locationGranted) return@LaunchedEffect
+                while (true) {
+                    val t = lastKnownLatLon(context)?.let { fetchOutsideTempC(it.first, it.second) }
+                    values["weatherTemp"] = t?.let { "%.0f".format(it) }
+                    delay(if (t == null) 60_000L else 15 * 60_000L)
+                }
+            }
 
             val params = parametersFor(profile)
 
@@ -202,7 +233,10 @@ class MainActivity : ComponentActivity() {
                 supported = null
                 info = VehicleInfoState()
                 faults = DtcState()
+                val local = values.filterKeys { it == "phoneTemp"}
                 values.clear()
+                unavailable.clear()
+                values.putAll(local)
             }
 
             fun startPolling() {
@@ -210,6 +244,7 @@ class MainActivity : ComponentActivity() {
                 pollJob = coroutineScope.launch {
                     var failures = 0
                     var cycle = 0
+                    var misses = mutableMapOf<String,Int>()
                     while (isActive) {
                         var attempted = false
                         var gotAny = false
@@ -223,7 +258,15 @@ class MainActivity : ComponentActivity() {
                             val bytes = btManager.readPid(p.pid)
                             val v = bytes?.let { p.decode(it) }
                             values[p.key] = v?.let { "%.${p.decimals}f".format(it) }
-                            if (v != null) gotAny = true
+                            if (v != null) {
+                                gotAny = true
+                                misses[p.key] = 0
+                                unavailable.remove(p.key)
+                            }else{
+                                val m = (misses[p.key] ?: 0) + 1
+                                misses[p.key] = m
+                                if (m >= 3) unavailable[p.key] = true
+                            }
                         }
 
                         if (attempted) {
@@ -555,7 +598,7 @@ class MainActivity : ComponentActivity() {
                     Screen.Params -> ParametersScreen(
                         vehicle = vehicle,
                         status = status,
-                        params = params,
+                        params = params.filter { unavailable[it.key] != true },
                         values = values,
                         supported = supported,
                         connected = connectedDevice != null,
@@ -753,6 +796,7 @@ private fun ParametersScreen(
                 TileGrid(rest, tileColumns) { p, m ->
                     StatTile(m, shortLabel(p), values[p.key], p.unit, valueColor(p.key, values[p.key]), big = false)
                 }
+
             }
             Spacer(Modifier.height(8.dp))
         }
@@ -761,8 +805,8 @@ private fun ParametersScreen(
 
 // Ce parametru merge în ce grup
 private val HERO_KEYS = listOf("vss", "rpm")
-private val TEMP_KEYS = listOf("ect", "oilt", "cat", "iat", "aat")
-private val LEVEL_KEYS = listOf("fuel", "hvbat", "adblue", "load", "tp", "tprel", "pedal")
+private val TEMP_KEYS = listOf("ect", "oilt", "cat", "iat", "aat", "phoneTemp")
+private val LEVEL_KEYS = listOf("fuel", "hvbat", "hvsoc", "adblue", "load", "tp", "tprel", "pedal")
 
 private val OkGreen = Color(0xFF4CAF50)
 private val WarnYellow = Color(0xFFFFD600)
@@ -772,13 +816,15 @@ private val BadRed = Color(0xFFE53935)
 
 /** Parametrul apare doar dacă mașina îl suportă (când știm lista) și are PID setat. */
 private fun isParamShown(p: ObdParameter, supported: Set<Int>?): Boolean {
-    if (p.pid.isBlank()) return false
+    if (p.pid.isBlank()) return p.key == "phoneTemp"
     if (supported == null || !p.pid.startsWith("01")) return true
     val n = p.pid.substring(2).toIntOrNull(16) ?: return true
     return n in supported
 }
 
 private fun shortLabel(p: ObdParameter): String = when (p.key) {
+    "hvsoc" -> "Hybrid battery"
+    "phoneTemp" -> "Phone"
     "vss" -> "Speed"
     "rpm" -> "Engine RPM"
     "ect" -> "Coolant"
@@ -802,6 +848,11 @@ private fun shortLabel(p: ObdParameter): String = when (p.key) {
 private fun valueColor(key: String, raw: String?): Color {
     val v = raw?.replace(',', '.')?.toDoubleOrNull() ?: return TextMain
     return when (key) {
+        "phoneTemp" -> when {
+            v < 40 -> OkGreen
+            v < 45 -> WarnOrange
+            else -> BadRed
+        }
         "tprel" -> when {
             v < 50 -> OkGreen
             v <= 75 -> WarnOrange
@@ -839,7 +890,7 @@ private fun valueColor(key: String, raw: String?): Color {
             v < 30 -> WarnOrange
             else -> OkGreen
         }
-        "hvbat" -> when {
+        "hvbat", "hvsoc" -> when {
             v < 15 -> BadRed
             v < 30 -> WarnOrange
             else -> OkGreen

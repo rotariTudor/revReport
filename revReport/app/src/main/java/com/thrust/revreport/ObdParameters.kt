@@ -34,6 +34,8 @@ private fun List<Int>.ab(): Int? {
 }
 
 val obdParameters = listOf(
+    ObdParameter("phoneTemp", "PHN", "Phone temperature", "°C", "") { null },
+    ObdParameter("weatherTemp", "OUT", "Outside temperature (weather)", "°C", "") { null },
     ObdParameter("tprel", "RTP", "Relative throttle", "%", "0145") { it.a()?.let { v -> v * 100.0 / 255.0 } },
     ObdParameter("pedal", "PED", "Accelerator pedal", "%", "0149") { it.a()?.let { v -> v * 100.0 / 255.0 } },
     ObdParameter("rpm", "RPM", "Engine RPM", "rpm", "010C") { it.ab()?.let { v -> v / 4.0 } },
@@ -61,6 +63,12 @@ val obdParameters = listOf(
         "hvbat", "BATT", "Hybrid battery level", "%", "015B",
         visibleFor = { it.hybrid }
     ) { it.a()?.let { v -> v * 100.0 / 255.0 } },
+
+    // Toyota Prius Gen 3 (XW30): nivelul bateriei hibrid de la ECU-ul hibrid (header 7E2, comanda 2101)
+    ObdParameter(
+        "hvsoc", "SOC", "Hybrid battery level (Toyota Prius)", "%", "7E2:2101",
+        visibleFor = { it.hybrid }
+    ) { it.getOrNull(21)?.let { v -> v * 20.0 / 51.0 } },
 
     // Diesel only: The PID and formula depend on the manufacturer (see ADBLUE_PID)
     ObdParameter(
