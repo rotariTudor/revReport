@@ -34,6 +34,8 @@ private fun List<Int>.ab(): Int? {
 }
 
 val obdParameters = listOf(
+    ObdParameter("tprel", "RTP", "Relative throttle", "%", "0145") { it.a()?.let { v -> v * 100.0 / 255.0 } },
+    ObdParameter("pedal", "PED", "Accelerator pedal", "%", "0149") { it.a()?.let { v -> v * 100.0 / 255.0 } },
     ObdParameter("rpm", "RPM", "Engine RPM", "rpm", "010C") { it.ab()?.let { v -> v / 4.0 } },
     ObdParameter("vss", "VSS", "Vehicle speed", "km/h", "010D") { it.a()?.toDouble() },
     ObdParameter("ect", "ECT", "Engine coolant temperature", "°C", "0105") { it.a()?.let { v -> v - 40.0 } },
