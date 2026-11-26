@@ -844,7 +844,7 @@ private fun HamburgerButton(onClick: () -> Unit, modifier: Modifier = Modifier) 
 }
 
 // ───────────────────────── Ecranul Parametri ─────────────────────────
-
+//github repo check
 @Composable
 private fun ParametersScreen(
     vehicle: VehicleId?,
