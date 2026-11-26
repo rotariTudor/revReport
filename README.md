@@ -1,4 +1,4 @@
-# revReport
+# revReport 1.2.21
 
 Aplicație Android pentru citirea datelor mașinii printr-un adaptor **ELM327 Bluetooth**: tablou de bord live, coduri de eroare, starea testelor de pregătire (readiness) și identificarea mașinii după VIN. Are suport specific pentru hibridele **Toyota Prius Gen 3 (XW30)**.
 
