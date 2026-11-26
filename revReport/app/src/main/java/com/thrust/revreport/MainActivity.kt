@@ -806,7 +806,7 @@ private fun ParametersScreen(
 // Ce parametru merge în ce grup
 private val HERO_KEYS = listOf("vss", "rpm")
 private val TEMP_KEYS = listOf("ect", "oilt", "cat", "iat", "aat", "phoneTemp")
-private val LEVEL_KEYS = listOf("fuel", "hvbat", "hvsoc", "adblue", "load", "tp", "tprel", "pedal")
+private val LEVEL_KEYS = listOf("fuel", "hvsoc", "adblue", "absload","iceeffort", "tprel", "pedal")
 
 private val OkGreen = Color(0xFF4CAF50)
 private val WarnYellow = Color(0xFFFFD600)
@@ -823,6 +823,8 @@ private fun isParamShown(p: ObdParameter, supported: Set<Int>?): Boolean {
 }
 
 private fun shortLabel(p: ObdParameter): String = when (p.key) {
+    "iceeffort" -> "Engine effort"
+    "absload" -> "Engine load"
     "hvsoc" -> "Hybrid battery"
     "phoneTemp" -> "Phone"
     "vss" -> "Speed"
@@ -835,7 +837,7 @@ private fun shortLabel(p: ObdParameter): String = when (p.key) {
     "fuel" -> "Fuel"
     "hvbat" -> "Hybrid battery"
     "adblue" -> "AdBlue"
-    "load" -> "Engine load"
+    "load" -> "Air flow ratio"
     "tp" -> "Throttle"
     "maf" -> "Air flow"
     "map" -> "Manifold"
@@ -863,7 +865,12 @@ private fun valueColor(key: String, raw: String?): Color {
             v <= 75 -> WarnOrange
             else -> BadRed
         }
-        "load" -> when {
+        "absload" -> when {
+            v < 50 -> OkGreen
+            v <= 75 -> WarnOrange
+            else -> BadRed
+        }
+        "iceeffort" -> when {
             v < 50 -> OkGreen
             v <= 75 -> WarnOrange
             else -> BadRed

@@ -46,11 +46,17 @@ val obdParameters = listOf(
     ObdParameter("tp", "TP", "Throttle position", "%", "0111") { it.a()?.let { v -> v * 100.0 / 255.0 } },
     ObdParameter("maf", "MAF", "Mass air flow (MAF)", "g/s", "0110") { it.ab()?.let { v -> v / 100.0 } },
     ObdParameter("map", "MAP", "Intake manifold absolute pressure", "kPa", "010B") { it.a()?.toDouble() },
-    ObdParameter("load", "LOAD", "Calculated engine load", "%", "0104") { it.a()?.let { v -> v * 100.0 / 255.0 } },
+    ObdParameter("load", "LOAD", "Air flow intake ratio", "%", "0104") { it.a()?.let { v -> v * 100.0 / 255.0 } },
+    ObdParameter("absload", "ABS", "Absolute engine load", "%", "0143") { it.ab()?.let { v -> v * 100.0 / 255.0 } },
     ObdParameter("vpwr", "VPWR", "Control module voltage", "V", "0142", decimals = 2) { it.ab()?.let { v -> v / 1000.0 } },
     ObdParameter("fuel", "FUEL", "Fuel level", "%", "012F") { it.a()?.let { v -> v * 100.0 / 255.0 } },
     ObdParameter("oilt", "OIL", "Engine oil temperature", "°C", "015C") { it.a()?.let { v -> v - 40.0 } },
     ObdParameter("cat", "CAT", "Catalyst temperature (bank 1, sensor 1)", "°C", "013C") { it.ab()?.let { v -> v / 10.0 - 40.0 } },
+
+    ObdParameter(
+        "iceeffort", "EFF", "Engine effort (requested ICE power)", "%", "7E0:2149",
+        visibleFor = { it.hybrid }
+    ) { b -> if (b.size >= 2) ((b[0] * 256 + b[1]) / 4.0 / 73.0 * 100.0).coerceIn(0.0, 100.0) else null },
 
     // Diesel engines do not have spark ignition
     ObdParameter(
