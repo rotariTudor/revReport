@@ -42,12 +42,15 @@ import androidx.compose.foundation.layout.windowInsetsPadding
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.HorizontalDivider
+import androidx.compose.material3.OutlinedTextField
+import androidx.compose.material3.OutlinedTextFieldDefaults
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
@@ -70,6 +73,7 @@ import androidx.compose.ui.graphics.drawscope.Stroke
 import androidx.compose.ui.platform.LocalConfiguration
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
@@ -173,6 +177,11 @@ class MainActivity : ComponentActivity() {
             var faults by remember { mutableStateOf(DtcState()) }
             var faultsLoading by remember { mutableStateOf(false) }
             var showClearConfirm by remember { mutableStateOf(false) }
+            // Consum: media pe cursă se păstrează între reconectări; se resetează doar din buton
+            val fuelTrip = remember { FuelTrip() }
+            var fuel by remember { mutableStateOf(FuelSnapshot()) }
+            var engineL by remember { mutableStateOf(prefs.getFloat("engine_l", 1.6f).toDouble()) }
+            var showEngineDialog by remember { mutableStateOf(false) }
             val devices = remember { mutableStateListOf<DeviceItem>() }
             val values = remember { mutableStateMapOf<String, String?>() }
             val unavailable = remember { mutableStateMapOf<String, Boolean>() }
@@ -231,6 +240,7 @@ class MainActivity : ComponentActivity() {
                 profile = VehicleProfile()
                 profileKnown = false
                 supported = null
+                fuel = fuelTrip.snapshot()
                 info = VehicleInfoState()
                 faults = DtcState()
                 val local = values.filterKeys { it == "phoneTemp"}
@@ -245,6 +255,9 @@ class MainActivity : ComponentActivity() {
                     var failures = 0
                     var cycle = 0
                     var misses = mutableMapOf<String,Int>()
+                    val raw = mutableMapOf<String, Double>()   // valori nerotunjite, pentru calculul consumului
+                    val fuelSource = FuelMath.chooseSource(supported, profile.diesel)
+                    val fuelKeys = FuelMath.keysFor(fuelSource, profile.diesel)
                     while (isActive) {
                         var attempted = false
                         var gotAny = false
@@ -253,11 +266,12 @@ class MainActivity : ComponentActivity() {
                             if (p.pid.isBlank()) continue                   // ex. AdBlue fără PID setat
                             if (!isParamShown(p, supported)) continue       // mașina nu are acest PID
                             // Viteza și turația se citesc la fiecare ciclu, restul la al 4-lea (afișaj mai rapid)
-                            if (cycle % 4 != 0 && p.key !in HERO_KEYS) continue
+                            if (cycle % 4 != 0 && p.key !in HERO_KEYS && p.key !in fuelKeys) continue
                             attempted = true
                             val bytes = btManager.readPid(p.pid)
                             val v = bytes?.let { p.decode(it) }
                             values[p.key] = v?.let { "%.${p.decimals}f".format(it) }
+                            if (v != null) raw[p.key] = v else raw.remove(p.key)
                             if (v != null) {
                                 gotAny = true
                                 misses[p.key] = 0
@@ -268,6 +282,20 @@ class MainActivity : ComponentActivity() {
                                 if (m >= 3) unavailable[p.key] = true
                             }
                         }
+
+                        // Consumul: se recalculează la fiecare ciclu din ultimele valori citite
+                        val lph = fuelSource?.let {
+                            FuelMath.fuelRateLph(
+                                it,
+                                FuelInputs(
+                                    fuelRateLph = raw["fuelrate"], mafGs = raw["maf"], mapKpa = raw["map"],
+                                    iatC = raw["iat"], rpm = raw["rpm"], lambda = raw["lambda"]
+                                ),
+                                profile.diesel,
+                                EngineConfig(displacementL = engineL)
+                            )
+                        }
+                        fuel = fuelTrip.update(System.currentTimeMillis(), fuelSource, lph, raw["vss"])
 
                         if (attempted) {
                             failures = if (gotAny) 0 else failures + 1
@@ -381,6 +409,93 @@ class MainActivity : ComponentActivity() {
                     }
                 }
             }
+
+
+            fun connectToSimulator()
+            {
+                if (busy) return
+
+                stopPolling()
+                btManager.closeConnection()
+                resetSession()
+
+                busy = true
+
+                coroutineScope.launch {
+                    try
+                    {
+                        status = "Connecting to Python simulator..."
+
+                        val isConnected = withContext(Dispatchers.IO)
+                        {
+                            //btManager.connectTcp("10.0.2.2", 35000)
+                            btManager.connectTcp("127.0.0.1", 35000)
+                        }
+
+                        if (!isConnected)
+                        {
+                            status = "Cannot connect to Python simulator"
+                            toast(status, true)
+                            return@launch
+                        }
+
+                        status = "Initializing simulator..."
+
+                        val atzResponse = btManager.initializeAdapter()
+
+                        if (atzResponse.isBlank())
+                        {
+                            btManager.closeConnection()
+                            status = "Simulator did not respond"
+                            toast(status, true)
+                            return@launch
+                        }
+
+                        connectedDevice = DeviceItem(
+                            "Python Simulator",
+                            "10.0.2.2"
+                        )
+
+                        status = "Checking simulated vehicle..."
+
+                        if (!btManager.warmUp())
+                        {
+                            btManager.closeConnection()
+                            connectedDevice = null
+                            status = "Simulator did not respond to OBD commands"
+                            toast(status, true)
+                            return@launch
+                        }
+
+                        val detection = btManager.detectVehicle()
+
+                        profile = detection.profile
+                        profileKnown = true
+
+                        supported = detection.supportedPids
+                            .takeIf { it.isNotEmpty() }
+                            ?.toSet()
+
+                        vehicle = null
+
+                        status = "Connected to Python Simulator"
+
+                        startPolling()
+                    }
+                    catch (e: Exception)
+                    {
+                        btManager.closeConnection()
+                        connectedDevice = null
+                        status = "Simulator error: ${e.message}"
+                        toast(status, true)
+                    }
+                    finally
+                    {
+                        busy = false
+                    }
+                }
+            }
+
 
             fun openDevices() {
                 val adapter = btManager.bluetoothAdapter
@@ -583,6 +698,18 @@ class MainActivity : ComponentActivity() {
                 }
             }
 
+            if (showEngineDialog) {
+                EngineDialog(
+                    currentL = engineL,
+                    onSave = {
+                        engineL = it
+                        prefs.edit().putFloat("engine_l", it.toFloat()).apply()
+                        showEngineDialog = false
+                    },
+                    onDismiss = { showEngineDialog = false }
+                )
+            }
+
             BackHandler(enabled = screen != Screen.Params) { screen = Screen.Params }
 
             Box(
@@ -602,6 +729,11 @@ class MainActivity : ComponentActivity() {
                         values = values,
                         supported = supported,
                         connected = connectedDevice != null,
+                        fuel = fuel,
+                        diesel = profile.diesel,
+                        engineL = engineL,
+                        onResetTrip = { fuelTrip.reset(); fuel = fuelTrip.snapshot(fuel.source) },
+                        onEditEngine = { showEngineDialog = true },
                         onDisconnect = { disconnect() },
                         onMenuClick = { showMainMenu = true }
                     )
@@ -638,6 +770,7 @@ class MainActivity : ComponentActivity() {
                         if (connectedDevice != null) readFaults()
                     },
                     onDevices = { showMainMenu = false; onDevicesClick() },
+                    onSimulator = { showMainMenu = false; connectToSimulator() },
                     onDismiss = { showMainMenu = false }
                 )
             }
@@ -720,6 +853,11 @@ private fun ParametersScreen(
     values: Map<String, String?>,
     supported: Set<Int>?,
     connected: Boolean,
+    fuel: FuelSnapshot,
+    diesel: Boolean,
+    engineL: Double,
+    onResetTrip: () -> Unit,
+    onEditEngine: () -> Unit,
     onDisconnect: () -> Unit,
     onMenuClick: () -> Unit
 ) {
@@ -778,6 +916,10 @@ private fun ParametersScreen(
                 TileGrid(hero, columns = 2) { p, m ->
                     StatTile(m, shortLabel(p), values[p.key], p.unit, valueColor(p.key, values[p.key]), big = true)
                 }
+            }
+            if (connected) {
+                SectionLabel("Fuel consumption")
+                FuelCard(fuel, diesel, engineL, onResetTrip, onEditEngine)
             }
             if (temps.isNotEmpty()) {
                 SectionLabel("Temperatures")
@@ -840,6 +982,8 @@ private fun shortLabel(p: ObdParameter): String = when (p.key) {
     "load" -> "Air flow ratio"
     "tp" -> "Throttle"
     "maf" -> "Air flow"
+    "fuelrate" -> "Fuel rate"
+    "lambda" -> "Lambda"
     "map" -> "Manifold"
     "spark" -> "Ignition"
     "vpwr" -> "12 V battery"
@@ -1173,6 +1317,7 @@ private fun MainMenuDialog(
     onInfo: () -> Unit,
     onFaults: () -> Unit,
     onDevices: () -> Unit,
+    onSimulator: () -> Unit,
     onDismiss: () -> Unit
 ) {
     AlertDialog(
@@ -1184,6 +1329,10 @@ private fun MainMenuDialog(
                 MenuItem("Parameters", onParams)
                 HorizontalDivider(color = Color(0xFF2A2A2A))
                 MenuItem("Bluetooth Device", onDevices)
+                ///
+                HorizontalDivider(color = Color(0xFF2A2A2A))
+                MenuItem("Python Simulator", onSimulator)
+                ///
                 HorizontalDivider(color = Color(0xFF2A2A2A))
                 MenuItem("Vehicle Information", onInfo)
                 HorizontalDivider(color = Color(0xFF2A2A2A))
@@ -1435,6 +1584,120 @@ private fun ClearFaultsDialog(onConfirm: () -> Unit, onDismiss: () -> Unit) {
         },
         dismissButton = {
             TextButton(onClick = onDismiss) { Text("Cancel", color = Color.White) }
+        }
+    )
+}
+
+// ───────────────────────── Consum ─────────────────────────
+
+private fun fmt1(v: Double?): String? = v?.let { "%.1f".format(it) }
+
+/** Consum instantaneu, media pe cursă și totalurile cursei. */
+@Composable
+private fun FuelCard(
+    fuel: FuelSnapshot,
+    diesel: Boolean,
+    engineL: Double,
+    onResetTrip: () -> Unit,
+    onEditEngine: () -> Unit
+) {
+    Column(
+        modifier = Modifier
+            .fillMaxWidth()
+            .clip(RoundedCornerShape(10.dp))
+            .background(Card)
+            .padding(10.dp)
+    ) {
+        if (fuel.source == null) {
+            Text(
+                if (diesel)
+                    "Consumption can't be calculated: this diesel reports neither fuel rate (PID 5E) nor lambda (PID 24) with air flow."
+                else
+                    "Consumption can't be calculated: the car reports neither fuel rate, air flow (MAF) nor manifold pressure (MAP).",
+                color = TextDim,
+                fontSize = 12.sp
+            )
+            return@Column
+        }
+
+        // Când mașina stă, L/100 km nu are sens: arătăm L/h
+        val stopped = fuel.lPer100Km == null
+        Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+            StatTile(
+                Modifier.weight(1f),
+                "Now",
+                fmt1(if (stopped) fuel.lPerHour else fuel.lPer100Km),
+                if (stopped) "L/h" else "L/100km",
+                TextMain,
+                big = false
+            )
+            StatTile(Modifier.weight(1f), "Trip average", fmt1(fuel.avgLPer100Km), "L/100km", TextMain, big = false)
+            StatTile(
+                Modifier.weight(1f),
+                "Trip",
+                "%.1f".format(fuel.tripKm),
+                "km · ${"%.2f".format(fuel.tripLiters)} L",
+                TextMain,
+                big = false
+            )
+        }
+        Spacer(Modifier.height(6.dp))
+        Row(verticalAlignment = Alignment.CenterVertically) {
+            val method = when (fuel.source) {
+                FuelSource.FUEL_RATE -> "Source: car fuel rate (accurate)"
+                FuelSource.MAF -> "Source: air flow (MAF), estimate"
+                else -> "Source: manifold pressure, rough estimate"
+            }
+            Text(method, color = TextDim, fontSize = 11.sp, modifier = Modifier.weight(1f))
+            if (fuel.source == FuelSource.MAP) {
+                TextButton(onClick = onEditEngine) {
+                    Text("Engine ${"%.1f".format(engineL)} L", color = Orange, fontSize = 12.sp)
+                }
+            }
+            TextButton(onClick = onResetTrip) { Text("Reset trip", color = Orange, fontSize = 12.sp) }
+        }
+    }
+}
+
+/** Capacitatea motorului, necesară doar pentru estimarea din MAP/RPM. */
+@Composable
+private fun EngineDialog(currentL: Double, onSave: (Double) -> Unit, onDismiss: () -> Unit) {
+    var text by remember { mutableStateOf("%.1f".format(currentL)) }
+    val value = text.replace(',', '.').toDoubleOrNull()
+    val valid = value != null && value in 0.5..8.0
+
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        containerColor = Card,
+        title = { Text("Engine displacement", color = Color.White) },
+        text = {
+            Column {
+                Text(
+                    "This car doesn't report air flow, so consumption is estimated from manifold " +
+                            "pressure and RPM. Enter the engine size in litres (e.g. 1.6).",
+                    color = TextDim,
+                    fontSize = 13.sp
+                )
+                Spacer(Modifier.height(10.dp))
+                OutlinedTextField(
+                    value = text,
+                    onValueChange = { text = it },
+                    singleLine = true,
+                    isError = !valid,
+                    suffix = { Text("L", color = TextDim) },
+                    keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Decimal),
+                    colors = OutlinedTextFieldDefaults.colors(
+                        focusedTextColor = Color.White,
+                        unfocusedTextColor = Color.White
+                    )
+                )
+            }
+        },
+        confirmButton = {
+            TextButton(enabled = valid, onClick = { onSave(value!!) }) { Text("Save", color = Orange) }
+        },
+        dismissButton = {
+            TextButton(onClick = onDismiss) { Text("Cancel", color = TextDim) }
         }
     )
 }

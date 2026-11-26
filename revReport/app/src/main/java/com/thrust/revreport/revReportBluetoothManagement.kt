@@ -16,6 +16,9 @@ import java.io.OutputStream
 import java.util.UUID
 import kotlinx.coroutines.NonCancellable
 
+import java.net.Socket
+import java.net.InetSocketAddress
+
 class revReportBluetoothManagement(val bluetoothAdapter: BluetoothAdapter?) {
 
     val SPP_UUID: UUID = UUID.fromString("00001101-0000-1000-8000-00805F9B34FB")
@@ -23,6 +26,9 @@ class revReportBluetoothManagement(val bluetoothAdapter: BluetoothAdapter?) {
     var currentSocket: BluetoothSocket? = null
     var inputStream: InputStream? = null
     var outputStream: OutputStream? = null
+
+    // adaugat pentru simulatorul de obd
+    var tcpSocket: Socket? = null
 
     /** O singură comandă odată pe stream: perechea cerere + răspuns nu se mai amestecă. */
     private val ioLock = Mutex()
@@ -388,17 +394,51 @@ class revReportBluetoothManagement(val bluetoothAdapter: BluetoothAdapter?) {
         return Pair(ok, raw.replace(Regex("\\s+"), " ").trim())
     }
 
-    fun closeConnection() {
-        try {
+    fun closeConnection()
+    {
+        try
+        {
             inputStream?.close()
             outputStream?.close()
             currentSocket?.close()
-        } catch (e: IOException) {
+            tcpSocket?.close()
+        }
+        catch (e: IOException)
+        {
             Log.e("RevReport", "Eroare la închiderea socket-ului: ${e.message}")
-        } finally {
+        }
+        finally
+        {
             inputStream = null
             outputStream = null
             currentSocket = null
+            tcpSocket = null
+        }
+    }
+
+    //creeaza o conexiune TCP
+    fun connectTcp(host: String, port: Int): Boolean
+    {
+        closeConnection()
+
+        return try
+        {
+            val socket = Socket()
+            socket.connect(InetSocketAddress(host, port), 5000)
+
+            tcpSocket = socket
+            inputStream = socket.getInputStream()
+            outputStream = socket.getOutputStream()
+
+            Log.d("RevReport", "Connected to TCP simulator")
+
+            true
+        }
+        catch (e: Exception)
+        {
+            Log.e("RevReport", "TCP connection failed: ${e.message}")
+            closeConnection()
+            false
         }
     }
 }

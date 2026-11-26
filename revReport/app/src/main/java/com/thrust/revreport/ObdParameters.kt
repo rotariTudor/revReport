@@ -44,12 +44,15 @@ val obdParameters = listOf(
     ObdParameter("aat", "AAT", "Ambient air temperature", "°C", "0146") { it.a()?.let { v -> v - 40.0 } },
     ObdParameter("iat", "IAT", "Intake air temperature", "°C", "010F") { it.a()?.let { v -> v - 40.0 } },
     ObdParameter("tp", "TP", "Throttle position", "%", "0111") { it.a()?.let { v -> v * 100.0 / 255.0 } },
-    ObdParameter("maf", "MAF", "Mass air flow (MAF)", "g/s", "0110") { it.ab()?.let { v -> v / 100.0 } },
+    ObdParameter("maf", "MAF", "Mass air flow (MAF)", "g/s", "0110", decimals = 1) { it.ab()?.let { v -> v / 100.0 } },
     ObdParameter("map", "MAP", "Intake manifold absolute pressure", "kPa", "010B") { it.a()?.toDouble() },
     ObdParameter("load", "LOAD", "Air flow intake ratio", "%", "0104") { it.a()?.let { v -> v * 100.0 / 255.0 } },
     ObdParameter("absload", "ABS", "Absolute engine load", "%", "0143") { it.ab()?.let { v -> v * 100.0 / 255.0 } },
     ObdParameter("vpwr", "VPWR", "Control module voltage", "V", "0142", decimals = 2) { it.ab()?.let { v -> v / 1000.0 } },
     ObdParameter("fuel", "FUEL", "Fuel level", "%", "012F") { it.a()?.let { v -> v * 100.0 / 255.0 } },
+    ObdParameter("fuelrate", "FRT", "Engine fuel rate", "L/h", "015E", decimals = 1) { it.ab()?.let { v -> v / 20.0 } },
+    // Doar pentru calculul consumului la diesel (raport echivalent aer/combustibil, senzor wideband)
+    ObdParameter("lambda", "LAM", "Equivalence ratio (lambda)", "", "0124", decimals = 2, visibleFor = { it.diesel }) { it.ab()?.let { v -> v / 32768.0 } },
     ObdParameter("oilt", "OIL", "Engine oil temperature", "°C", "015C") { it.a()?.let { v -> v - 40.0 } },
     ObdParameter("cat", "CAT", "Catalyst temperature (bank 1, sensor 1)", "°C", "013C") { it.ab()?.let { v -> v / 10.0 - 40.0 } },
 
