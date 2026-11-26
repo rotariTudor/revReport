@@ -82,7 +82,7 @@ python3 gen_dtc.py obd-trouble-codes.csv DtcData.kt
 - **Decodarea VIN** folosește baza de date NHTSA, orientată spre SUA. Pe mașini europene poate întoarce doar marca și anul.
 - Ștergerea codurilor **resetează și starea testelor de pregătire** (readiness).
 - Nu există suport BLE sau Wi-Fi.
-- Testat pe: **TODO: completează mașina și telefonul**.
+- Testat pe: Toyota Prius XW30 cu Samsung S25FE.
 
 ## Confidențialitate
 
